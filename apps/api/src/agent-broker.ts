@@ -26,14 +26,18 @@ export function brokerSocketForRole(
   return config.runnerBrokerSocket;
 }
 
-// Which engine answered (broker index.mjs runInWorkspace): Claude through the
-// subscription for planner/research when switched on, otherwise opencode.
+// Which engine answered (broker index.mjs runAgent): Claude through the
+// subscription for a role whose switch is on, otherwise opencode.
 // notbetrieb: Claude failed and opencode (DeepSeek) stood in (card t_936d9b0f).
 export interface AgentEngine {
   name: string;
   model: string;
   notbetrieb?: true;
   reason?: string;
+}
+
+export function isAgentEngine(value: unknown): value is AgentEngine {
+  return !!value && typeof value === "object" && typeof (value as AgentEngine).name === "string" && typeof (value as AgentEngine).model === "string";
 }
 
 function brokerEngine(value: unknown): AgentEngine | null {

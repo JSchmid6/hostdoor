@@ -171,7 +171,8 @@ Shell-Zerlegung) an drei Stellen (Policy, `runHostRun`, Root-Helfer). Er ist sam
 228 Kartenläufe (13 % der Kartenzeit) allein in Riegel-PRs mit bis zu neun Prüfrunden. Ebenso
 ausgebaut: der Skript-Lexer (`hiddenPinnedScripts`, siehe oben) und die Textmuster-Grenzen der
 Planer-Vorprüfung (`evaluatePlanPolicy`: `rm -rf`, `iptables`, Pfade der Geheimnisse). Der Schutz
-liegt in Schloss, Türsteher (andere Modellfamilie, der ganze Plan einmal), Risiko-Riegel (erklärte
+liegt in Schloss, Türsteher (eigener Lauf ohne den Kontext des Planers, stärkeres Modell, der ganze
+Plan einmal; die Modellfamilie zählt seit 14.11.2026 nicht mehr, `plan-engine-claude.md`), Risiko-Riegel (erklärte
 Klasse, kein Textmuster), Netz und den Unit-Grenzen (`ProtectHome`, `InaccessiblePaths=
 /etc/wireguard-ops-cockpit` in der Agent-Unit). Nicht ausgebaut, weil keine Textfilter: die
 typisierten Zeilenformen der Sondertüren (`parseTyped*`, `requestsBorgRepair` — dieselbe Grammatik,

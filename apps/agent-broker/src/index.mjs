@@ -129,25 +129,49 @@ export function roleBudgetMs(role) {
   return role === "runner" ? 1800000 : role === "research" ? 120000 : 900000;
 }
 
-// Planner and research may run on Claude through the subscription (Jochen,
-// 13.11.2026, card t_936d9b0f); safety, verifier and the runner stay on
-// opencode. COCKPIT_PLAN_ENGINE=claude in agent.env switches it on; read per
-// run, so the unit's environment is the one truth.
-export const claudeRoles = new Set(["planner", "research"]);
-export function claudeSettings(env = process.env) {
+// Every plan role may run on Claude through the subscription; DeepSeek
+// (opencode) stands in only as NOTBETRIEB. Planner and research since
+// 13.11.2026 (card t_936d9b0f, COCKPIT_PLAN_ENGINE=claude), safety (plan
+// safety review, doorkeeper, pre-install review) and verifier since 14.11.2026
+// (Jochen: "ALLES auf Claude, nur Fallback auf DeepSeek", card t_dc74af18):
+// they run on Claude whenever the login is there (claude.env) and their switch
+// (COCKPIT_SAFETY_ENGINE, COCKPIT_VERIFIER_ENGINE) does not say otherwise, so
+// rolling out needs no edit of agent.env; =opencode is the way back for that
+// role. Planner and research keep their explicit switch. Judgements on security run on a big
+// model (Jochen: Opus, not Sonnet/Haiku/DeepSeek), so safety defaults to opus.
+// The runner (build, its own unit without the login) stays on opencode.
+// Read per run, so the unit's environment is the one truth.
+export const claudeRoles = new Set(["planner", "research", "safety", "verifier"]);
+const claudeRoleSwitch = { planner: "COCKPIT_PLAN_ENGINE", research: "COCKPIT_PLAN_ENGINE", safety: "COCKPIT_SAFETY_ENGINE", verifier: "COCKPIT_VERIFIER_ENGINE" };
+const claudeRoleModel = {
+  planner: ["COCKPIT_CLAUDE_MODEL", "sonnet"], research: ["COCKPIT_CLAUDE_MODEL", "sonnet"],
+  safety: ["COCKPIT_CLAUDE_SAFETY_MODEL", "opus"], verifier: ["COCKPIT_CLAUDE_VERIFIER_MODEL", "sonnet"],
+};
+export function claudeSettings(role, env = process.env) {
+  if (!claudeRoles.has(role)) return { enabled: false };
+  const [modelKey, modelDefault] = claudeRoleModel[role];
+  const value = env[claudeRoleSwitch[role]];
+  const reviewer = role === "safety" || role === "verifier";
   return {
-    enabled: env.COCKPIT_PLAN_ENGINE === "claude",
+    enabled: value === "claude" || (reviewer && !value && Boolean(env.CLAUDE_CODE_OAUTH_TOKEN)),
     executable: env.COCKPIT_CLAUDE_EXECUTABLE || "claude",
-    model: env.COCKPIT_CLAUDE_MODEL || "sonnet",
+    model: env[modelKey] || modelDefault,
+    tools: claudeToolsFor(role),
   };
 }
 
-// The tools of opencode's plan agent that the two roles use: read, search,
-// shell (the unit is the boundary, AGENTS.md "plan denies only the edit tool"),
-// web for research. No edit or write tool.
+// The tools of opencode's plan agent that the roles use: read, search, shell
+// (the unit is the boundary, AGENTS.md "plan denies only the edit tool"), web
+// for planner and research. The reviewers judge the material in their prompt
+// and observe the host; they get no web tool, so nothing they read can make
+// them fetch or send. No role has an edit or write tool.
 export const claudeTools = "Bash,Read,Grep,Glob,WebFetch,WebSearch";
+export const claudeReviewTools = "Bash,Read,Grep,Glob";
+export function claudeToolsFor(role) {
+  return role === "safety" || role === "verifier" ? claudeReviewTools : claudeTools;
+}
 
-export function claudeArgs(workspace, model) {
+export function claudeArgs(workspace, model, tools = claudeTools) {
   // --safe-mode: no CLAUDE.md, skills, plugins, hooks, MCP servers, custom
   // agents or commands — whatever lies on the host reaches no role (like
   // opencode's --pure plus assertNoPlantedConfig). The role instructions come
@@ -155,7 +179,7 @@ export function claudeArgs(workspace, model) {
   // Listing the tools in --allowedTools lets -p use them without a prompt;
   // every other tool is refused.
   return ["-p", "--safe-mode", "--strict-mcp-config", "--no-session-persistence", "--model", model,
-    "--tools", claudeTools, "--allowedTools", claudeTools,
+    "--tools", tools, "--allowedTools", tools,
     "--append-system-prompt-file", path.join(workspace, "AGENTS.md"), "--output-format", "json"];
 }
 
@@ -287,9 +311,9 @@ async function inWorkspace(request, run) {
 
 export async function runAgent(request) {
   const deadline = Date.now() + roleBudgetMs(request.role);
-  const claude = claudeSettings();
+  const claude = claudeSettings(request.role);
   let notbetrieb = null;
-  if (claude.enabled && claudeRoles.has(request.role)) {
+  if (claude.enabled) {
     const result = await inWorkspace(request, (workspace) => runClaude(request, workspace, claude, deadline));
     if (!result.fallback) return result;
     notbetrieb = result.fallback;
@@ -322,7 +346,7 @@ async function runClaude(request, workspace, claude, deadline) {
 async function runClaudeIn(request, workspace, tmpdir, claude, deadline) {
   const env = claudeEnv(workspace, tmpdir);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
-  const run = await runProcess(claude.executable, claudeArgs(workspace, claude.model), env, workspace, request.prompt, deadline - Date.now());
+  const run = await runProcess(claude.executable, claudeArgs(workspace, claude.model, claude.tools), env, workspace, request.prompt, deadline - Date.now());
   const parsed = parseClaudeResult(run.stdout);
   if (parsed.ok && run.code === 0) return { ok: true, exitCode: 0, output: parsed.output, engine: { name: "claude", model: parsed.model } };
   // A run that used its whole budget has no time left for a second engine,

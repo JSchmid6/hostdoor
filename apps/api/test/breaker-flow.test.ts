@@ -60,7 +60,7 @@ const hostRun = {
 };
 const plan = ["```host-run", JSON.stringify(hostRun), "```", "## Intent", "Keep the host's packages current."].join("\n");
 
-async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number; waitMs?: number } = {}) {
+async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number; waitMs?: number; brokerDoorkeeper?: boolean } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "breaker-flow-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const seed = new CockpitDatabase(path.join(dir, "cockpit.sqlite"));
@@ -77,7 +77,8 @@ async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number
   // The host run's outcome, switched per test step.
   // busy: so many starts the helper still refuses because another run holds the host.
   // engine: what the broker reports for the planner (t_936d9b0f); unset like an older broker.
-  const host: { status: "success" | "failed"; doorkeeper: string; busy: number; busyMessage: string; plan: string; engine?: Record<string, unknown>; plannerFails?: boolean } = {
+  // reviewEngine/verifierEngine: the same for the doorkeeper and the verifier (t_dc74af18).
+  const host: { status: "success" | "failed"; doorkeeper: string; busy: number; busyMessage: string; plan: string; engine?: Record<string, unknown>; plannerFails?: boolean; reviewEngine?: Record<string, unknown>; verifierEngine?: Record<string, unknown> } = {
     status: "failed", doorkeeper: "VERDICT: pass\nNOTES: routine apt maintenance", busy: 0, busyMessage: "another host run is active: 3e06625f-0000", plan,
   };
   const executorCalls = await listen(path.join(dir, "executor.sock"), (request) => {
@@ -100,11 +101,12 @@ async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number
   const agentCalls = await listen(path.join(dir, "agent.sock"), (request) => {
     if (request.role === "planner" && host.plannerFails) return { ok: false, error: "opencode exited with 1", ...(host.engine ? { engine: host.engine } : {}) };
     if (request.role === "planner") return { ok: true, output: host.plan, ...(host.engine ? { engine: host.engine } : {}) };
-    return { ok: true, output: "VERIFICATION_STATUS: passed\nEVIDENCE: no upgradable packages\nREASON: done" };
+    if (request.role === "safety") return { ok: true, output: host.doorkeeper, ...(host.reviewEngine ? { engine: host.reviewEngine } : {}) };
+    return { ok: true, output: "VERIFICATION_STATUS: passed\nEVIDENCE: no upgradable packages\nREASON: done", ...(host.verifierEngine ? { engine: host.verifierEngine } : {}) };
   });
   const app = await createApp({
     config: config(dir, { executorBrokerSocket: path.join(dir, "executor.sock"), executorBrokerSecret: BROKER_SECRET, agentBrokerSocket: path.join(dir, "agent.sock"), runnerBrokerSocket: path.join(dir, "agent.sock"), ...overrides }),
-    hostRunReviewRunner: async () => host.doorkeeper,
+    ...(slot.brokerDoorkeeper ? {} : { hostRunReviewRunner: async () => host.doorkeeper }),
     hostRunPollMs: 10,
     hostRunSlotPollMs: slot.pollMs ?? 10,
     hostRunSlotWaitMs: slot.waitMs,
@@ -473,5 +475,30 @@ describe("change circuit breaker through the API", () => {
     const both = await flow.submit({ operation: "apt-both" });
     expect(both.status).toBe("failed_execution");
     expect(both.output?.notbetrieb).toContain("NOTBETRIEB: planner ran on deepseek/deepseek-v4-pro");
+  }, 15_000);
+
+  // Every reviewer on Claude too (card t_dc74af18): the doorkeeper (broker role
+  // safety) and the verifier leave their engine on the job, a DeepSeek stand-in
+  // for either is NOTBETRIEB.
+  it("keeps which engine reviewed and verified on the job, and marks a reviewer's DeepSeek stand-in NOTBETRIEB", async () => {
+    const flow = await setup({}, { brokerDoorkeeper: true });
+    flow.host.status = "success";
+    flow.host.engine = { name: "claude", model: "claude-sonnet-5-5" };
+    flow.host.reviewEngine = { name: "claude", model: "claude-opus-5-5" };
+    flow.host.verifierEngine = { name: "claude", model: "claude-sonnet-5-5" };
+    const claude = await flow.submit({ operation: "apt-review-claude" });
+    expect(claude.status).toBe("completed");
+    expect(flow.agentCalls.map((call) => call.role)).toEqual(expect.arrayContaining(["planner", "safety", "verifier"]));
+    expect(claude.output?.agentEngine).toEqual({
+      planner: { name: "claude", model: "claude-sonnet-5-5" },
+      doorkeeper: { name: "claude", model: "claude-opus-5-5" },
+      verifier: { name: "claude", model: "claude-sonnet-5-5" },
+    });
+    expect(claude.output?.notbetrieb).toBeUndefined();
+
+    flow.host.reviewEngine = { name: "opencode", model: "deepseek/deepseek-v4-pro", notbetrieb: true, reason: "Claude AI usage limit reached" };
+    const fallback = await flow.submit({ operation: "apt-review-fallback" });
+    expect(fallback.status).toBe("completed");
+    expect(fallback.output?.notbetrieb).toBe("NOTBETRIEB: doorkeeper ran on deepseek/deepseek-v4-pro (opencode) because Claude failed: Claude AI usage limit reached");
   }, 15_000);
 });

@@ -5,7 +5,7 @@ import path from "node:path";
 import type { ExecutionReview, ExecutionRiskClass, PlanReviewVerdict, RunbookDefinition } from "@wireguard-ops-cockpit/domain";
 import type { AppConfig } from "./config.js";
 import { SCRIPTS } from "./registries.js";
-import { runBrokerAgent } from "./agent-broker.js";
+import { runBrokerAgentWithEngine, type AgentEngine } from "./agent-broker.js";
 import { parseCapabilityManifest } from "./capability-manifest.js";
 import { parseHostRunManifest } from "./host-run.js";
 import { updateTargets } from "./update-review.js";
@@ -58,6 +58,7 @@ interface CopilotReviewResult {
   completedAt: string;
   durationMs: number;
   model: string | null;
+  engine?: AgentEngine | null;
 }
 
 function resolveScriptPath(scriptIdOrPath: string, repoRoot: string): string {
@@ -294,6 +295,7 @@ export async function generateRunbookSafetyReview(
         rollbackHint: parsed.rollbackHint,
         operatorChecks: parsed.operatorChecks,
         model: runtimeResult.model,
+        ...(runtimeResult.engine ? { engine: runtimeResult.engine } : {}),
         exitCode: runtimeResult.exitCode,
         startedAt: runtimeResult.startedAt,
         completedAt: runtimeResult.completedAt,
@@ -313,8 +315,9 @@ export async function generateRunbookSafetyReview(
 async function runBrokerSafetyReview(prompt: string, runtime: SafetyReviewRuntimeConfig): Promise<CopilotReviewResult> {
   const startedAt = new Date().toISOString();
   const started = Date.now();
-  const stdout = await runBrokerAgent(runtime.agentBrokerSocket!, "safety", prompt);
-  return { stdout, exitCode: 0, startedAt, completedAt: new Date().toISOString(), durationMs: Date.now() - started, model: runtime.opencodeModel };
+  const { output: stdout, engine } = await runBrokerAgentWithEngine(runtime.agentBrokerSocket!, "safety", prompt);
+  // The broker names the engine that really answered (Claude or opencode, card t_dc74af18).
+  return { stdout, exitCode: 0, startedAt, completedAt: new Date().toISOString(), durationMs: Date.now() - started, model: engine?.model ?? runtime.opencodeModel, engine };
 }
 
 function buildPromptPayload(input: RunbookSafetyReviewInput) {

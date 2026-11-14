@@ -443,18 +443,43 @@ node -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is
     assert.deepEqual(fs.readdirSync(process.env.COCKPIT_AGENT_WORKSPACE_ROOT), []);
     // Every failed Claude run removed its short TMPDIR too, not only the answered ones.
     assert.deepEqual(claudeTmpdirs().filter((name) => !tmpdirsBefore.includes(name)), []);
-    // Safety and verifier never go to Claude, and are no NOTBETRIEB.
+    // With their switch on opencode safety and verifier stay there, and are no NOTBETRIEB.
+    Object.assign(process.env, { COCKPIT_SAFETY_ENGINE: "opencode", COCKPIT_VERIFIER_ENGINE: "opencode" });
     for (const role of ["safety", "verifier"]) {
       const review = await runAgent({ requestId: "c1a0de00-2", role, prompt: "review" });
       assert.equal(review.ok, true, review.error);
       assert.deepEqual(review.engine, { name: "opencode", model: "default" });
     }
+    // Without a switch, with the login there, they run on Claude (card t_dc74af18):
+    // safety on opus, the verifier on sonnet, both without web tools; the DeepSeek
+    // key does not reach them. "claude" says the same explicitly.
+    delete process.env.COCKPIT_SAFETY_ENGINE;
+    process.env.COCKPIT_VERIFIER_ENGINE = "claude";
+    for (const [role, model] of [["safety", "opus"], ["verifier", "sonnet"]]) {
+      const review = await runAgent({ requestId: "c1a0de00-4", role, prompt: "review" });
+      assert.equal(review.ok, true, review.error);
+      assert.deepEqual(review.engine, { name: "claude", model: "claude-sonnet-5-5" });
+      assert.match(review.output, new RegExp(`^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model ${model} --tools Bash,Read,Grep,Glob --allowedTools Bash,Read,Grep,Glob --append-system-prompt-file \\S+/AGENTS\\.md --output-format json `));
+      assert.match(review.output, / scrub=1 token=set deepseek= prompt=review$/);
+    }
+    process.env.COCKPIT_CLAUDE_SAFETY_MODEL = "fable";
+    assert.match((await runAgent({ requestId: "c1a0de00-5", role: "safety", prompt: "review" })).output, / --model fable /);
+    // A logged-out Claude: the reviewer falls back to opencode with the safety model, labelled.
+    const reviewFallback = await runAgent({ requestId: "c1a0fa11-2", role: "safety", prompt: "review" });
+    assert.equal(reviewFallback.ok, true, reviewFallback.error);
+    assert.deepEqual(reviewFallback.engine, { name: "opencode", model: "default", notbetrieb: true, reason: "Not logged in · Please run /login" });
+    // Without the login a reviewer stays on opencode (no NOTBETRIEB: Claude was never meant to run),
+    // and the runner never goes to Claude.
+    for (const key of ["COCKPIT_SAFETY_ENGINE", "COCKPIT_VERIFIER_ENGINE", "COCKPIT_CLAUDE_SAFETY_MODEL"]) delete process.env[key];
+    assert.deepEqual((await runAgent({ requestId: "c1a0de00-7", role: "runner", prompt: "run" })).engine, { name: "opencode", model: "default" });
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    assert.deepEqual((await runAgent({ requestId: "c1a0de00-6", role: "safety", prompt: "review" })).engine, { name: "opencode", model: "default" });
     // Without the switch the planner stays on opencode.
     delete process.env.COCKPIT_PLAN_ENGINE;
     const plain = await runAgent({ requestId: "c1a0de00-3", role: "planner", prompt: "plan it" });
     assert.deepEqual(plain.engine, { name: "opencode", model: "default" });
   } finally {
-    for (const key of ["COCKPIT_PLAN_ENGINE", "COCKPIT_CLAUDE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN", "DEEPSEEK_API_KEY"]) {
+    for (const key of ["COCKPIT_PLAN_ENGINE", "COCKPIT_SAFETY_ENGINE", "COCKPIT_VERIFIER_ENGINE", "COCKPIT_CLAUDE_SAFETY_MODEL", "COCKPIT_CLAUDE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN", "DEEPSEEK_API_KEY"]) {
       if (key in saved) process.env[key] = saved[key]; else delete process.env[key];
     }
   }
