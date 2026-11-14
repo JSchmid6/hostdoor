@@ -44,7 +44,7 @@ import { generateRunbookSafetyReview, type SafetyReviewRunner } from "./safety-r
 import { activationAction, activationReason, capabilityExecution, hostRunExecution, selfUpdateVerifierNote, typedActionsExecution, type TypedActionOutput, type TypedExecution } from "./self-update-activation.js";
 import { boundedVerifierPrompt } from "./verifier-prompt.js";
 import { BREAKER_WINDOW_MS, OPERATION_PATTERN, breakerKeyFor, breakerReason, evaluateBreaker } from "./circuit-breaker.js";
-import { BrokerAgentError, brokerSocketForRole, runBrokerAgent, runBrokerAgentWithEngine, type AgentEngine } from "./agent-broker.js";
+import { BrokerAgentError, brokerSocketForRole, isAgentEngine, runBrokerAgentWithEngine, type AgentEngine } from "./agent-broker.js";
 import { runDynamicCapability, runExecutorAction, type ExecutorActionKind } from "./executor-broker.js";
 import { borgStatusRequestDigest, createBorgStatusService } from "./borg-status.js";
 import { createRetentionService, decideRetentionChange, readApproval, retentionRequestDigest, retentionTarget } from "./borg-retention.js";
@@ -123,10 +123,10 @@ interface AppOptions {
   safetyReviewRunner?: SafetyReviewRunner;
   // The isolated reviewer of a self-update's code (prompt in, raw answer out).
   // Defaults to the agent broker's safety role; tests inject a stub.
-  updateReviewRunner?: (prompt: string) => Promise<string>;
+  updateReviewRunner?: (prompt: string, jobId?: string) => Promise<string>;
   // The doorkeeper of the general host door (prompt in, raw answer out).
   // Defaults to the agent broker's safety role; tests inject a stub.
-  hostRunReviewRunner?: (prompt: string) => Promise<string>;
+  hostRunReviewRunner?: (prompt: string, jobId?: string) => Promise<string>;
   // Reads the GitHub API for the second review of a self-update
   // (verifySecondReview). Defaults to api.github.com; tests inject a stub.
   githubFetch?: GithubFetch;
@@ -2023,10 +2023,11 @@ export async function createApp(options: AppOptions = {}) {
     return output;
   }
 
-  // Which engine planned or researched stays on the job (output.agentEngine),
-  // and a Claude failure that opencode (DeepSeek) stood in for is marked
-  // NOTBETRIEB in output.notbetrieb — Hermes reports it to Jochen (card
-  // t_936d9b0f). updateHermesJob carries both through every later update.
+  // Which engine planned, researched, reviewed or verified stays on the job
+  // (output.agentEngine: planner, research, safety, doorkeeper, update-review,
+  // verifier), and a Claude failure that opencode (DeepSeek) stood in for is
+  // marked NOTBETRIEB in output.notbetrieb — Hermes reports it to Jochen (cards
+  // t_936d9b0f, t_dc74af18). updateHermesJob carries both through every later update.
   function recordAgentEngine(jobId: string, role: string, engine: AgentEngine): void {
     const job = database.getJob(jobId);
     if (!job || job.status === "withdrawn") return;
@@ -2047,13 +2048,14 @@ export async function createApp(options: AppOptions = {}) {
     runnerResult: string,
     targetNote = "",
     apiHandoff = false,
+    jobId?: string,
   ): Promise<string> {
     // The run has happened: whatever stops the verifier now (its prompt bound,
     // the broker, a timeout) is a verification that did not pass, never a job
     // that failed before execution (21.10.2026, ba5196ee/a86a0577).
     try {
       const { prompt } = boundedVerifierPrompt(verifierInstruction(intent, targetNote, apiHandoff), reviewedPlan, runnerResult);
-      const verifierRaw = await runIsolatedAgent(actor, session, planner, "verifier", prompt, "-verifier", 5 * 60_000, config.safetyOpencodeModel);
+      const verifierRaw = await runIsolatedAgent(actor, session, planner, "verifier", prompt, "-verifier", 5 * 60_000, config.safetyOpencodeModel, jobId);
       return verifierRaw
         ? filterSensitiveContent(extractCleanOutput(verifierRaw) || extractAnswer(verifierRaw))
         : "VERIFICATION_STATUS: failed\nREASON: verifier timeout";
@@ -2191,18 +2193,40 @@ export async function createApp(options: AppOptions = {}) {
   // The update reviewer gets the prompt unwrapped, like the plan safety review
   // (runIsolatedAgent would add the planner template). Without the agent
   // broker there is no isolated reviewer: the review fails closed.
-  const updateReviewRunner = options.updateReviewRunner || (async (prompt: string) => {
+  const updateReviewRunner = options.updateReviewRunner || (async (prompt: string, jobId?: string) => {
     if (!config.agentBrokerSocket) throw new Error("the isolated reviewer needs the agent broker");
-    return await runBrokerAgent(config.agentBrokerSocket, "safety", prompt);
+    return await runReviewerWithEngine(prompt, jobId, "update-review");
   });
 
   // The doorkeeper of the general host door: the same isolated safety role,
   // its own instructions (host-run.ts). Without the agent broker there is no
   // isolated reviewer, and the review is incomplete.
-  const hostRunReviewRunner = options.hostRunReviewRunner || (async (prompt: string) => {
+  const hostRunReviewRunner = options.hostRunReviewRunner || (async (prompt: string, jobId?: string) => {
     if (!config.agentBrokerSocket) throw new Error("the isolated reviewer needs the agent broker");
-    return await runBrokerAgent(config.agentBrokerSocket, "safety", prompt);
+    return await runReviewerWithEngine(prompt, jobId, "doorkeeper");
   });
+
+  // The isolated safety role for the pre-install review and the doorkeeper,
+  // with its engine on the job. The passes of one pre-install review are
+  // collected (reviewPassEngines) and recorded once, so a later pass on Claude
+  // does not hide that an earlier one ran on DeepSeek.
+  const reviewPassEngines = new Map<string, AgentEngine[]>();
+  async function runReviewerWithEngine(prompt: string, jobId: string | undefined, key: string): Promise<string> {
+    const keep = (engine: AgentEngine | null) => {
+      if (!jobId || !engine) return;
+      const passes = reviewPassEngines.get(jobId);
+      if (passes) passes.push(engine); else recordAgentEngine(jobId, key, engine);
+    };
+    try {
+      const { output, engine } = await runBrokerAgentWithEngine(config.agentBrokerSocket!, "safety", prompt);
+      keep(engine);
+      return output;
+    } catch (error) {
+      if (error instanceof BrokerAgentError) keep(error.engine);
+      throw error;
+    }
+  }
+
   const githubFetch = options.githubFetch || githubApiFetch();
   const hostRunPollMs = options.hostRunPollMs ?? HOST_RUN_POLL_MS;
   const hostRunSlotPollMs = options.hostRunSlotPollMs ?? HOST_RUN_SLOT_POLL_MS;
@@ -2218,7 +2242,7 @@ export async function createApp(options: AppOptions = {}) {
     outcome.reviewPath = path.join(proposalDir, `${jobId}-host-run-review.md`);
     await writeFile(outcome.reviewPath, material.prompt, { encoding: "utf-8", mode: 0o600 });
     try {
-      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt))), manifest);
+      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest);
     } catch (error) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
     }
@@ -2397,7 +2421,15 @@ export async function createApp(options: AppOptions = {}) {
       : prompts.map((prompt, index) => `<!-- review pass ${index + 1}/${prompts.length} -->\n${prompt}`).join("\n\n");
     await writeFile(reviewPath, record, { encoding: "utf-8", mode: 0o600 });
     const outcome: UpdateReviewOutcome = { kind, bindings: updateBindings(diffs), coverage };
-    Object.assign(outcome, await runUpdateReviewPasses(prompts, updateReviewRunner));
+    reviewPassEngines.set(jobId, []);
+    try {
+      Object.assign(outcome, await runUpdateReviewPasses(prompts, (prompt) => updateReviewRunner(prompt, jobId)));
+    } finally {
+      const passes = reviewPassEngines.get(jobId) || [];
+      reviewPassEngines.delete(jobId);
+      const engine = passes.find((pass) => pass.notbetrieb) || passes.at(-1);
+      if (engine) recordAgentEngine(jobId, "update-review", engine);
+    }
     // A self-update review that would stop looks for a second review of
     // exactly these commits, which the Cockpit verifies itself (4b).
     if (kind === "self" && updateReviewFindings(outcome).result !== "pass") {
@@ -2451,9 +2483,15 @@ export async function createApp(options: AppOptions = {}) {
     // executionStartedAt markiert den Beginn der Ausführung auf dem Host; er
     // bleibt am Job, damit ein späterer Fehlschlag als echter Fehllauf zählt.
     // hostRunQueue belegt, wie lange der Job auf den Platz am Host wartete.
-    // agentEngine/notbetrieb: welcher Motor plante, ob DeepSeek einsprang (t_936d9b0f).
-    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue", "agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
-    const output: Record<string, unknown> = { ...carried, ...extra, explanation: detail };
+    // agentEngine/notbetrieb: welcher Motor plante, prüfte oder verifizierte, ob
+    // DeepSeek einsprang (t_936d9b0f, t_dc74af18). Beide schreibt nur
+    // recordAgentEngine in die Datenbank; ein Aufrufer, der einen älteren
+    // output-Stand mitgibt (Freigabe-Pfad, Weiterverfolgen nach Neustart), darf
+    // sie nicht überschreiben, sonst verschwände ein NOTBETRIEB des Verifiers.
+    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    const engines = Object.fromEntries(["agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    const { agentEngine: _staleEngine, notbetrieb: _staleNotbetrieb, ...fresh } = extra;
+    const output: Record<string, unknown> = { ...carried, ...fresh, ...engines, explanation: detail };
     const updated = database.updateJob(jobId, {
       status,
       output,
@@ -2655,6 +2693,7 @@ export async function createApp(options: AppOptions = {}) {
           runbook: proposal, runbookVersionHash: computeRunbookVersionHash(proposal), riskClass: "moderate",
           sessionId: session.id, trigger: "manual", scheduleId: null,
         }, { ...config, opencodeModel: config.safetyOpencodeModel });
+        if (isAgentEngine(review.details.engine)) recordAgentEngine(job.id, "safety", review.details.engine);
         policy = evaluatePlanPolicy(planText, review.verdict);
       }
       const manifestHash = manifest ? capabilityManifestHash(manifest) : hostRun ? hostRunManifestHash(hostRun) : undefined;
@@ -2785,7 +2824,7 @@ export async function createApp(options: AppOptions = {}) {
       const pendingActivations = typed?.pendingActivations ?? [];
       const targetNote = selfUpdateVerifierNote(pendingActivations);
       const verification = runnerSuccess
-        ? await runIndependentVerification(actor, session, planner, intent, planText, result, targetNote, typedResult !== null)
+        ? await runIndependentVerification(actor, session, planner, intent, planText, result, targetNote, typedResult !== null, job.id)
         : unreportedSuccess(result);
       const success = runnerSuccess && /VERIFICATION_STATUS:\s*passed/i.test(verification);
       const retainedCapability = success ? await retainValidatedCapability(capabilityDir, job.id, manifest) : null;
@@ -3047,7 +3086,7 @@ export async function createApp(options: AppOptions = {}) {
         const runnerSuccess = /STATUS:\s*success/i.test(result);
         const pendingActivations = typed?.pendingActivations ?? [];
         const verification = runnerSuccess
-          ? await runIndependentVerification(actor, session, planner, intent, reviewedPlan, result, selfUpdateVerifierNote(pendingActivations), typedResult !== null)
+          ? await runIndependentVerification(actor, session, planner, intent, reviewedPlan, result, selfUpdateVerifierNote(pendingActivations), typedResult !== null, job.id)
           : unreportedSuccess(result);
         const success = runnerSuccess && /VERIFICATION_STATUS:\s*passed/i.test(verification);
         const retainedCapability = success ? await retainValidatedCapability(capabilityDir, job.id, manifest) : null;
@@ -4795,7 +4834,7 @@ Follow these rules:
       const planner = findAgent("planner-agent", "opencode");
       const runnerSuccess = /STATUS:\s*success/i.test(result);
       const verification = runnerSuccess && actor && session && planner
-        ? await runIndependentVerification(actor, session, planner, intent, planText, result, "", true)
+        ? await runIndependentVerification(actor, session, planner, intent, planText, result, "", true, job.id)
         : runnerSuccess ? "VERIFICATION_STATUS: failed\nREASON: the verifier runtime is unavailable after the restart" : unreportedSuccess(result);
       const success = runnerSuccess && /VERIFICATION_STATUS:\s*passed/i.test(verification);
       updateHermesJob(job.id, success ? "completed" : "failed_verification", explanation({
