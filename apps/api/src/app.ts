@@ -2483,9 +2483,15 @@ export async function createApp(options: AppOptions = {}) {
     // executionStartedAt markiert den Beginn der Ausführung auf dem Host; er
     // bleibt am Job, damit ein späterer Fehlschlag als echter Fehllauf zählt.
     // hostRunQueue belegt, wie lange der Job auf den Platz am Host wartete.
-    // agentEngine/notbetrieb: welcher Motor plante, ob DeepSeek einsprang (t_936d9b0f).
-    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue", "agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
-    const output: Record<string, unknown> = { ...carried, ...extra, explanation: detail };
+    // agentEngine/notbetrieb: welcher Motor plante, prüfte oder verifizierte, ob
+    // DeepSeek einsprang (t_936d9b0f, t_dc74af18). Beide schreibt nur
+    // recordAgentEngine in die Datenbank; ein Aufrufer, der einen älteren
+    // output-Stand mitgibt (Freigabe-Pfad, Weiterverfolgen nach Neustart), darf
+    // sie nicht überschreiben, sonst verschwände ein NOTBETRIEB des Verifiers.
+    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    const engines = Object.fromEntries(["agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    const { agentEngine: _staleEngine, notbetrieb: _staleNotbetrieb, ...fresh } = extra;
+    const output: Record<string, unknown> = { ...carried, ...fresh, ...engines, explanation: detail };
     const updated = database.updateJob(jobId, {
       status,
       output,

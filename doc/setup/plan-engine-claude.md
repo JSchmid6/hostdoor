@@ -22,9 +22,9 @@ Zonen hängen am Risiko, nicht am Modell; ein Modellwechsel ändert keine Grenze
 |---|---|
 | `COCKPIT_PLAN_ENGINE=claude` | Planer und Research über `claude -p`; fehlt die Zeile, bleiben sie auf opencode |
 | `COCKPIT_CLAUDE_MODEL=sonnet` | Modell von Planer und Research, Alias oder voller Name; Vorgabe `sonnet` |
-| `COCKPIT_SAFETY_ENGINE` | Safety (Plan-Sicherheitsprüfung, Türsteher, Pre-install-Review): fehlt die Zeile, läuft sie über `claude -p`, sobald der Login (`claude.env`) da ist; `=opencode` ist der Rückweg, `=claude` erzwingt Claude |
+| `COCKPIT_SAFETY_ENGINE` | Safety (Plan-Sicherheitsprüfung, Türsteher, Pre-install-Review): fehlt die Zeile oder ist sie leer, läuft sie über `claude -p`, sobald der Login (`claude.env`) da ist; `=claude` erzwingt Claude; **jeder andere Wert** (gedacht: `opencode`, aber auch ein Tippfehler) hält sie auf opencode, ohne NOTBETRIEB — das ist der Rückweg |
 | `COCKPIT_CLAUDE_SAFETY_MODEL=opus` | Modell der Safety; Vorgabe `opus`. Fable nur nach einem belegten Opus-Fehlschlag |
-| `COCKPIT_VERIFIER_ENGINE` | Verifier: wie Safety, fehlt die Zeile, läuft er mit Login über Claude; `=opencode` ist der Rückweg |
+| `COCKPIT_VERIFIER_ENGINE` | Verifier: dieselbe Regel wie Safety (fehlt/leer und Login da → Claude; `claude` → Claude; jeder andere Wert → opencode) |
 | `COCKPIT_CLAUDE_VERIFIER_MODEL=sonnet` | Modell des Verifiers; Vorgabe `sonnet` |
 | `CLAUDE_CODE_OAUTH_TOKEN=…` | **in `claude.env`**, nicht in `agent.env`: Langzeit-Login aus `claude setup-token` (ein Jahr gültig). Nur die Agent-Unit lädt `claude.env` (`EnvironmentFile=-…`); die Runner-Unit, die `agent.env` auch lädt, bekommt ihn nie |
 | `COCKPIT_CLAUDE_ENV_SCRUB=0` | nur als bewusste Ausnahme: schaltet das Abschotten des Logins vor der Shell ab (siehe unten) |
@@ -133,10 +133,15 @@ von Claude fällt nicht zurück: Das Budget ist dann verbraucht, die Rolle schei
 - Broker-Antwort: `engine: {name, model}`, im Rückfall zusätzlich `notbetrieb: true, reason`.
 - Job: `output.agentEngine.<rolle>` (bleibt über alle späteren Updates) und bei Rückfall — auch wenn
   der Rückfall selbst scheitert — `output.notbetrieb = "NOTBETRIEB: planner ran on <modell> (opencode) because Claude failed: <grund>"`,
-  gebildet aus dem jeweils letzten Motor je Rolle (ein Neuplanen über Claude löscht es). Rollen-Schlüssel:
+  gebildet aus dem jeweils letzten Motor je Rolle (ein Neuplanen über Claude löscht es für diese Rolle;
+  eine Rolle, die im neuen Anlauf nicht mehr läuft, etwa der Türsteher nach einem Neustart, wenn der neue
+  Plan nicht über die Host-Tür geht, behält ihren alten Eintrag: lieber zu viel gemeldet als verborgen).
+  Den Motor-Stand schreibt nur `recordAgentEngine`; spätere Job-Updates übernehmen ihn aus der Datenbank,
+  nie aus einem älteren Ausgabe-Stand (Freigabe-Pfad, Weiterverfolgen nach Neustart). Rollen-Schlüssel:
   `planner`, `research`, `safety` (Plan-Sicherheitsprüfung), `doorkeeper` (Türsteher der Host-Tür),
   `update-review` (Pre-install-Review; mehrere Durchgänge zählen als einer, ein NOTBETRIEB in irgendeinem
-  bleibt stehen), `verifier`. Die Plan-Sicherheitsprüfung trägt den Motor zusätzlich in `safety.details.engine`.
+  bleibt stehen), `verifier`. Die Plan-Sicherheitsprüfung trägt den Motor zusätzlich in `safety.details.engine`,
+  auch wenn sie scheitert (Antwort unlesbar oder Claude und Rückfall gescheitert).
 - Sicherheitsarbeit wird nie wegen des Abo-Limits geparkt: Ist das Fenster voll, prüft DeepSeek als
   NOTBETRIEB, statt dass der Job wartet. Eine Zeitüberschreitung des Türstehers ist dagegen „review
   incomplete“: Es läuft nichts.

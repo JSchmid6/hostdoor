@@ -5,7 +5,7 @@ import path from "node:path";
 import type { ExecutionReview, ExecutionRiskClass, PlanReviewVerdict, RunbookDefinition } from "@wireguard-ops-cockpit/domain";
 import type { AppConfig } from "./config.js";
 import { SCRIPTS } from "./registries.js";
-import { runBrokerAgentWithEngine, type AgentEngine } from "./agent-broker.js";
+import { BrokerAgentError, runBrokerAgentWithEngine, type AgentEngine } from "./agent-broker.js";
 import { parseCapabilityManifest } from "./capability-manifest.js";
 import { parseHostRunManifest } from "./host-run.js";
 import { updateTargets } from "./update-review.js";
@@ -258,12 +258,16 @@ export async function generateRunbookSafetyReview(
     }
   } catch { /* fall through to LLM review */ }
 
+  // The engine that answered, also when its answer cannot be read or the
+  // broker failed: a DeepSeek stand-in stays visible as NOTBETRIEB (t_dc74af18).
+  let engine: AgentEngine | null = null;
   try {
     const runtimeResult = isOpencode
       ? runtime.agentBrokerSocket
         ? await runBrokerSafetyReview(prompt, runtime)
         : await runOpencodeSafetyReview(prompt, runtime)
       : await runCopilotSafetyReview(prompt, runtime);
+    engine = runtimeResult.engine ?? null;
     const parsed = parseRunbookSafetyOutput(runtimeResult.stdout);
     const effectiveVerdict = resolveEffectiveVerdict(parsed.verdict, input.runbook.requiresApproval);
 
@@ -308,7 +312,9 @@ export async function generateRunbookSafetyReview(
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unknown safety review failure";
-    return createFailedReview(input, inputHash, reason, runtimeSource);
+    if (error instanceof BrokerAgentError && error.engine) engine = error.engine;
+    const failed = createFailedReview(input, inputHash, reason, runtimeSource);
+    return engine ? { ...failed, details: { ...failed.details, engine } } : failed;
   }
 }
 

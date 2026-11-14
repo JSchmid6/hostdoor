@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunbookDefinition } from "@wireguard-ops-cockpit/domain";
@@ -302,5 +303,39 @@ describe("runbook safety review", () => {
     expect(review.details.parseStatus).toBe("error");
     expect(review.details.source).toBe("opencode");
     expect(review.details.runbookVersionHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  // Safety on Claude, DeepSeek only as NOTBETRIEB (card t_dc74af18): the engine the
+  // broker names stays on the review, also when the review fails.
+  it("keeps the broker's engine on the review, also on a failed review", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "safety-engine-"));
+    const socket = path.join(dir, "agent.sock");
+    let answer: Record<string, unknown> = {};
+    const server = net.createServer((connection) => {
+      connection.on("data", () => connection.end(JSON.stringify(answer)));
+    });
+    await new Promise<void>((resolve) => server.listen(socket, () => resolve()));
+    try {
+      const runbook = findRunbook("nextcloud-update-plan")!;
+      const run = () => generateRunbookSafetyReview(
+        { runbook, runbookVersionHash: computeRunbookVersionHash(runbook), riskClass: "high", sessionId: "session-4", trigger: "manual", scheduleId: null },
+        { repoRoot: process.cwd(), plannerRuntime: "opencode", copilotExecutable: "copilot", copilotModel: null, opencodeExecutable: "opencode", opencodeModel: "deepseek/deepseek-v4-pro", agentBrokerSocket: socket },
+      );
+      const fallback = { name: "opencode", model: "deepseek/deepseek-v4-pro", notbetrieb: true, reason: "Claude AI usage limit reached" };
+      // Claude and the stand-in both failed.
+      answer = { ok: false, error: "opencode exited with 1", engine: fallback };
+      const failed = await run();
+      expect(failed.verdict).toBe("blocked");
+      expect(failed.details.engine).toEqual(fallback);
+      // The stand-in answered something unreadable.
+      answer = { ok: true, output: "no verdict here", engine: fallback };
+      expect((await run()).details.engine).toEqual(fallback);
+      // Claude answered: model from the broker.
+      answer = { ok: true, output: "no verdict either", engine: { name: "claude", model: "claude-opus-5-5" } };
+      expect((await run()).details.engine).toEqual({ name: "claude", model: "claude-opus-5-5" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

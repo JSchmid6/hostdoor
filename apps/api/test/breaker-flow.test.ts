@@ -501,4 +501,29 @@ describe("change circuit breaker through the API", () => {
     expect(fallback.status).toBe("completed");
     expect(fallback.output?.notbetrieb).toBe("NOTBETRIEB: doorkeeper ran on deepseek/deepseek-v4-pro (opencode) because Claude failed: Claude AI usage limit reached");
   }, 15_000);
+
+  // The approval path continues from the job as it was before the verifier ran;
+  // the verifier's engine and NOTBETRIEB written meanwhile must survive it.
+  it("keeps the verifier's NOTBETRIEB through the approval path", async () => {
+    const flow = await setup({}, { brokerDoorkeeper: true });
+    flow.host.status = "success";
+    flow.host.engine = { name: "opencode", model: "deepseek/deepseek-v4-pro", notbetrieb: true, reason: "Not logged in" };
+    flow.host.reviewEngine = { name: "claude", model: "claude-opus-5-5" };
+    flow.host.doorkeeper = [
+      "VERDICT: flag", "FINDING: upgrade without pinning", "CLASS: X5", "WHERE: S1:L1",
+      "CODE: apt-get update && apt-get -y upgrade", "PATH: an upgrade can break a service", "SEVERITY: high",
+    ].join("\n");
+    const waiting = await flow.submit({ operation: "t_verifier_notbetrieb" });
+    expect(waiting.status).toBe("blocked_user_approval");
+    flow.host.verifierEngine = { name: "opencode", model: "deepseek/deepseek-v4-pro", notbetrieb: true, reason: "Claude AI usage limit reached" };
+    const approved = await flow.app.inject({ method: "POST", url: `/api/hermes/jobs/${waiting.id}/approval`, headers: { cookie: flow.cookie }, payload: { decision: "approved", reason: "plan ok" } });
+    expect(approved.statusCode).toBe(202);
+    const finished = await flow.settled(waiting.id);
+    expect(finished.status).toBe("completed");
+    expect(finished.output?.agentEngine).toEqual({ planner: flow.host.engine, doorkeeper: flow.host.reviewEngine, verifier: flow.host.verifierEngine });
+    expect(String(finished.output?.notbetrieb).split("\n")).toEqual([
+      "NOTBETRIEB: planner ran on deepseek/deepseek-v4-pro (opencode) because Claude failed: Not logged in",
+      "NOTBETRIEB: verifier ran on deepseek/deepseek-v4-pro (opencode) because Claude failed: Claude AI usage limit reached",
+    ]);
+  }, 15_000);
 });
