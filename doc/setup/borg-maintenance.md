@@ -193,7 +193,7 @@ das Backup über das Drop-in die paar Sekunden ab.
 | --- | --- | --- |
 | `/usr/local/sbin/cockpit-borg-action` | `deploy/helpers/cockpit-borg-action` | der einzige sudo-exponierte Einstieg; gepinnte Grammatik `status\|check\|repair` (dazu `db-access …` und `sources …`, nur aus einem Lauf der allgemeinen Tür) |
 | `/etc/borgmatic/cockpit-sources.patterns` (+ `.vor-<Zeit>`) | `sources connect` legt sie an, `sources add` ergänzt | zusätzliche Backup-Quellen als `R <pfad>`-Zeilen, 0644 root, kein Geheimnis; `config.yaml` nennt sie per `patterns_from` |
-| `/etc/borgmatic/mysqldump.cnf` (+ `.vor-<Zeit>`) | heute `db-access adopt` (Zwischenweg B), Ziel `db-access bootstrap` (Weg A, Karte t_58a51884), danach Rotation per `ensure` | Anmeldung des mysqldump-Hooks, 0600 root: heute das Nextcloud-Konto `nextDB` — an das NC-Passwort gekoppelt, gedumpt wird nur `nextcloud`, **nicht** `wordpress`; Ziel `cockpit_backup@localhost`. Die `.vor-`Dateien sind der Rückweg |
+| `/etc/borgmatic/mysqldump.cnf` (+ `.vor-<Zeit>`) | seit 15.11.2026 `db-access bootstrap` (Weg A, Karte t_58a51884), Rotation per `ensure` | Anmeldung des mysqldump-Hooks, 0600 root: `cockpit_backup@localhost`, gedumpt werden alle Datenbanken samt `wordpress`. Die `.vor-`Dateien sind der Rückweg (`.vor-20261115T084434Z` = Zwischenweg B, `nextDB`) |
 | `/etc/sudoers.d/cockpit-executor` | `deploy/sudoers/cockpit-executor` | Zeile `cockpit-executor ALL=(root) NOPASSWD: /usr/local/sbin/cockpit-borg-action *` |
 | `/var/lib/wireguard-ops-cockpit/borg/last.unit`, `last.kind` | Laufzeit | zuletzt gestartete Wartungs-Unit und ihre Art, 0750 root — nur für die Anzeige; **der Laufzustand kommt aus systemd** (`systemctl is-active <unit>`) |
 | `/run/lock/cockpit-borg.lock` | Laufzeit | Sperre gegen zwei gleichzeitige Läufe auf demselben Repo: `check`/`repair` halten sie für die Dauer des Laufs, die Repo-Abfragen von `status` kurz (ist sie nach 60 s nicht frei, meldet `status` „belegt“ mit rc=0); das nächtliche Backup wartet auf sie |
@@ -234,9 +234,9 @@ Der mysqldump-Hook der borgmatic-Konfiguration
 meldete sich bis zum 26.10.2026 mit dem **Nextcloud-Konto** an. Nach dessen Passwort-Rotation
 (Karte t_bc2b0db1) scheiterte jedes Backup mit 1045, zwei Nächte lang. **Entscheidung (Jochen,
 28.10.2026, Karte t_30c9ea52):** Ziel ist ein eigenes Konto, entkoppelt von Nextcloud-
-und WordPress-Passwörtern. **Ist-Stand:** das ist noch nicht umgesetzt — live läuft Zwischenweg B
-(`adopt`, Nextcloud-Konto, nur DB `nextcloud`, WordPress nicht im Dump; siehe Befund unten), bis
-Weg A (Karte t_58a51884, `db-access bootstrap`) einmal gelaufen ist.
+und WordPress-Passwörtern. **Ist-Stand (15.11.2026):** umgesetzt mit Weg A (`db-access bootstrap`,
+Karte t_58a51884, Host-Run 831111be); Zwischenweg B ist nur noch der Rückweg. Belege und offener
+Punkt root per Socket: unten „Weg A — Ausrollung 15.11.2026“.
 
 | Form | Wirkung |
 | --- | --- |
@@ -257,7 +257,7 @@ Grenzen:
   `/dev/urandom`) und die Verwaltungs-Anmeldung gehen nur über `printf` (bash-builtin) in eine
   Pipe bzw. ein `/dev/fd` — nie in argv, Umgebung, Protokoll oder Ausgabe. Das Protokoll der Tür
   schwärzt zusätzlich jede `password=`-Zuweisung.
-* **Die Verwaltungs-Anmeldung** ist root per Socket, sobald `bootstrap` gelaufen ist (ohne
+* **Die Verwaltungs-Anmeldung** ist root per Socket, sobald `bootstrap` root den Socket gegeben hat (auf diesem Host am 15.11.2026 nicht, siehe „Weg A — Ausrollung“; ohne
   Geheimnis); vorher und als Rückfall das Nextcloud-DB-Konto aus `config.php`: auf
   diesem Host sind root (Socket und `debian.cnf`) und `mysql@localhost` passwortgeschützt
   (Inventar-Jobs 697b46d0, be3a0f57), ein anderes Konto mit `CREATE USER` gibt es nicht. Gelesen
@@ -337,6 +337,22 @@ Grenzen:
     `restore` lesen `config.php` dann nicht mehr (kein X1 mehr).
   * Kein Teil der Ausnahme `backup-repair`: `bootstrap` startet die Datenbank neu und braucht den
     normalen Rückweg (Backup höchstens 30 h alt) und den Maschinen-Snapshot.
+* **Weg A — Ausrollung 15.11.2026 (Karte t_58a51884):** PR #105 (Merge e362ebd), Selbst-Update
+  f64e91bd, Host-Run 831111be: Neustart mit `--init-file` rc=0 nach 1 s, Datei gelöscht,
+  `MYSQLD_OPTS` zurückgenommen; `cockpit_backup@localhost` meldet sich an, `mysqldump.cnf` root:root
+  600, alte Datei `/etc/borgmatic/mysqldump.cnf.vor-20261115T084434Z` (Stand Zwischenweg B).
+  Belege (Leseläufe fa859018, ea6239bb): `borgmatic.service` Result=success, ExecMainStatus=0
+  (09:44–10:20 MEZ); Archiv `vmd61162-2026-11-15T09:45:56.669257`; `tmp/backup_dumps/all_mysql.sql`
+  350862552 Bytes gegen 337927263 Bytes im Archiv `…-2026-11-15T02:24:19` (noch `nextDB`) — +12,9 MB
+  in 7 h, während der Dump von 14. auf 15.11. nur um 66 kB wuchs; `/var/lib/mysql/wordpress` 69 MB
+  auf der Platte. Dass `wordpress` im Dump steht, ist damit über die Größe belegt, nicht über den
+  Inhalt (kein Extract). `db-access status`: Konto `cockpit_backup`, Anmeldung ok.
+  **Offen:** root hat **kein** `unix_socket` bekommen (`root per socket: ERROR 1045`, Status des Laufs
+  `failed_verification` allein deshalb). Vermutung, ungeprüft: der Eintrag von root in
+  `mysql.global_priv` erfüllt die Ein-Verfahren-Bedingung nicht, die Datei lief mit `DO 0` — root hat
+  nichts verloren. Folge: `ensure`/`restore` brauchen weiter das Nextcloud-Konto (X1 im Intent). Eine
+  direkte SQL-Abfrage mit dem Backup-Konto zur Diagnose hat der Türsteher zu Recht abgewiesen (Job
+  17619aa6, X1); der Weg ist ein lesender Modus des Helfers, der nur die Auth-Plugins von root nennt.
 * Ohne Rückweg darf genau dieser Lauf trotzdem starten (Ausnahme `backup-repair`,
   `doc/setup/host-run.md`): `db-access ensure` (oder `adopt`), danach `systemctl start borgmatic.service`,
   Prüfungen `db-access check` und `! systemctl is-failed --quiet borgmatic.service`, Rückweg
