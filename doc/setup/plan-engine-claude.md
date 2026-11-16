@@ -242,6 +242,7 @@ den Verifier auf Opus (Karte t_0cb8edbd), die Vorgabe ist seitdem `opus`.
   nicht die des Elternprozesses. Gleiche Klasse wie `DEEPSEEK_API_KEY` heute. Was der Broker
   zurückgibt (Antwort, Fehler), schwärzt er vorher: den genauen Wert und alles in der Form
   `sk-ant-…` (`redactLogin`). Die API schwärzt die Form noch einmal (`filterSensitiveContent`).
+  Kodierte oder zerlegte Ausgaben (base64, hex, Zeilenumbruch im Wert) erkennt die Schwärzung nicht.
   Gegen Abfluss über Netz schützt das nicht, dafür sorgen Türsteher und Verifier. Bei Verdacht: Token im
   Abo widerrufen, neu erzeugen.
 - Abo-Läufe zählen gegen Jochens 5-h-Fenster; ist es voll, läuft NOTBETRIEB (Kosten DeepSeek).
