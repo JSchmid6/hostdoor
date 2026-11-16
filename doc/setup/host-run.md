@@ -123,6 +123,26 @@ Datenbank-Passwörter ist dort immer ein Befund, egal wohin die Ausgabe geht. Ro
 Routine: Paket-Updates aus den eingetragenen Quellen, Docker-Pulls, Kernel mit Neustart,
 GitLab-Stufen, Dienst-Neustarts.
 
+**X2 nach Wirkung (Jochen, 16.11.2026, Karte t_befe7fc7).** Früher nannte X2 „the Cockpit's own code,
+helpers, units, sudoers or secrets“ pauschal als Befund. Damit ging jeder Test, der die Cockpit-Units
+nur kurz anders laufen lässt, an Jochen — zuletzt der Rückfalltest aus t_0cb8edbd (ein flüchtiger
+Drop-in unter `/run` setzt `COCKPIT_CLAUDE_EXECUTABLE=/nonexistent`, ein Timer räumt nach 40 Minuten;
+Box `ac9d7a9e`, Lab0 `7eb17a11`, VPS `2712f71c`). Jochen: „Der Cockpit Agent enthält deshalb KI, damit
+er komplexe Zusammenhänge versteht und bewerten kann.“ Keine Textmuster-Ausnahme (Entscheidung
+08.11.), sondern ein Urteil nach Kriterien. Die Kernfrage im Prompt: Erweitert die Änderung, wer
+handeln darf oder was eine Unit darf, oder lenkt sie um, was mit den Rechten des Cockpits läuft (Ziel
+nicht im Plan, existiert, oder von einer Nicht-root-Identität platzierbar)? Dann X2. Kein Befund nur,
+wenn der Türsteher alles aus dem Material zeigen kann: (a) schränkt nur ein (Ziel kann nachweislich
+nicht laufen, gewährt nichts), (b) flüchtig (nur `/run`, systemd-run, weg nach Neustart; nichts unter
+`/etc`, `/usr`, `/var`, `/opt`, keine Unit-Datei, kein Hilfsprogramm, kein sudoers, kein Geheimnis),
+(c) nimmt sich selbst zurück (Timer oder späterer Schritt im Plan, genau passend, ohne den Besteller),
+(d) passt zum Zweck. Bei Zweifel: Befund. Code, Unit-Dateien, Hilfsprogramme, sudoers und Geheimnisse
+des Cockpits ändern sich weiter nur über das Selbst-Update; ein Bootstrap bleibt X2 (`self-update.md`,
+„Bootstrap when the update path itself is broken“). Fälle MUSS-flaggen und DARF-durch:
+`apps/api/test/fixtures/host-run-review-cases.json`; Messlauf mit echtem Claude:
+`node test/host-run-review-live.mjs --role <vps|lab0|box> --out <ordner>` (nach `npm run build`, nicht
+Teil von `npm test`).
+
 **Jedes ausgeführte Skript steht wörtlich im Plan** (05.11.2026, Befund X5 aus Job 26fb0860): Ein
 stündlicher root-Dienst führte ein Skript aus, das der Lauf nur per Hash festnagelte
 (`printf '<sha256>  /pfad' | sha256sum -c -`); der Türsteher sah einen Hash statt Code. Das ist ein
