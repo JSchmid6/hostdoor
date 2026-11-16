@@ -138,22 +138,26 @@ export function roleBudgetMs(role) {
 // (COCKPIT_SAFETY_ENGINE, COCKPIT_VERIFIER_ENGINE) does not say otherwise, so
 // rolling out needs no edit of agent.env; =opencode is the way back for that
 // role. Planner and research keep their explicit switch. Judgements on security run on a big
-// model (Jochen: Opus, not Sonnet/Haiku/DeepSeek), so safety defaults to opus.
-// The runner (build, its own unit without the login) stays on opencode.
-// Read per run, so the unit's environment is the one truth.
-export const claudeRoles = new Set(["planner", "research", "safety", "verifier"]);
-const claudeRoleSwitch = { planner: "COCKPIT_PLAN_ENGINE", research: "COCKPIT_PLAN_ENGINE", safety: "COCKPIT_SAFETY_ENGINE", verifier: "COCKPIT_VERIFIER_ENGINE" };
+// model (Jochen: Opus, not Sonnet/Haiku/DeepSeek), so safety defaults to opus;
+// since 15.11.2026 the verifier too (Jochen: "Safety/Verifier/Update-Review
+// opus"). The runner (build, its own unit) follows the reviewers' rule since
+// 15.11.2026 (card t_0cb8edbd): on Claude (opus) whenever its unit has the login,
+// COCKPIT_RUNNER_ENGINE=opencode is its way back. Read per run, so the unit's
+// environment is the one truth.
+export const claudeRoles = new Set(["planner", "research", "safety", "verifier", "runner"]);
+const claudeRoleSwitch = { planner: "COCKPIT_PLAN_ENGINE", research: "COCKPIT_PLAN_ENGINE", safety: "COCKPIT_SAFETY_ENGINE", verifier: "COCKPIT_VERIFIER_ENGINE", runner: "COCKPIT_RUNNER_ENGINE" };
 const claudeRoleModel = {
   planner: ["COCKPIT_CLAUDE_MODEL", "sonnet"], research: ["COCKPIT_CLAUDE_MODEL", "sonnet"],
-  safety: ["COCKPIT_CLAUDE_SAFETY_MODEL", "opus"], verifier: ["COCKPIT_CLAUDE_VERIFIER_MODEL", "sonnet"],
+  safety: ["COCKPIT_CLAUDE_SAFETY_MODEL", "opus"], verifier: ["COCKPIT_CLAUDE_VERIFIER_MODEL", "opus"],
+  runner: ["COCKPIT_CLAUDE_RUNNER_MODEL", "opus"],
 };
 export function claudeSettings(role, env = process.env) {
   if (!claudeRoles.has(role)) return { enabled: false };
   const [modelKey, modelDefault] = claudeRoleModel[role];
   const value = env[claudeRoleSwitch[role]];
-  const reviewer = role === "safety" || role === "verifier";
+  const onByLogin = role === "safety" || role === "verifier" || role === "runner";
   return {
-    enabled: value === "claude" || (reviewer && !value && Boolean(env.CLAUDE_CODE_OAUTH_TOKEN)),
+    enabled: value === "claude" || (onByLogin && !value && Boolean(env.CLAUDE_CODE_OAUTH_TOKEN)),
     executable: env.COCKPIT_CLAUDE_EXECUTABLE || "claude",
     model: env[modelKey] || modelDefault,
     tools: claudeToolsFor(role),
@@ -164,11 +168,14 @@ export function claudeSettings(role, env = process.env) {
 // (the unit is the boundary, AGENTS.md "plan denies only the edit tool"), web
 // for planner and research. The reviewers judge the material in their prompt
 // and observe the host; they get no web tool, so nothing they read can make
-// them fetch or send. No role has an edit or write tool.
+// them fetch or send. No plan role has an edit or write tool. The runner, the
+// one role that acts on the host, gets opencode build's tools: shell, read,
+// edit, write, search; no web.
 export const claudeTools = "Bash,Read,Grep,Glob,WebFetch,WebSearch";
 export const claudeReviewTools = "Bash,Read,Grep,Glob";
+export const claudeRunnerTools = "Bash,Read,Edit,Write,Grep,Glob";
 export function claudeToolsFor(role) {
-  return role === "safety" || role === "verifier" ? claudeReviewTools : claudeTools;
+  return role === "runner" ? claudeRunnerTools : role === "safety" || role === "verifier" ? claudeReviewTools : claudeTools;
 }
 
 export function claudeArgs(workspace, model, tools = claudeTools) {
@@ -176,18 +183,24 @@ export function claudeArgs(workspace, model, tools = claudeTools) {
   // agents or commands — whatever lies on the host reaches no role (like
   // opencode's --pure plus assertNoPlantedConfig). The role instructions come
   // from the workspace's root-controlled AGENTS.md, as the system prompt's tail.
-  // Listing the tools in --allowedTools lets -p use them without a prompt;
-  // every other tool is refused.
+  // --tools is the list of tools that exist for the role; every other tool is
+  // absent. --permission-mode bypassPermissions (Jochen 15.11.2026, card
+  // t_0cb8edbd): Claude Code's own checks (paths outside the working directory,
+  // protected directories) refused admin work silently in the middle of a -p
+  // run. The boundary is the unit (identity, ProtectSystem=strict, no sudo),
+  // the signed plan and the snapshot, not Claude's prompt layer; --allowedTools
+  // stays as the explicit list. stream-json: the broker counts the tool calls
+  // (runAgent: a runner that already acted gets no stand-in).
   return ["-p", "--safe-mode", "--strict-mcp-config", "--no-session-persistence", "--model", model,
-    "--tools", tools, "--allowedTools", tools,
-    "--append-system-prompt-file", path.join(workspace, "AGENTS.md"), "--output-format", "json"];
+    "--permission-mode", "bypassPermissions", "--tools", tools, "--allowedTools", tools,
+    "--append-system-prompt-file", path.join(workspace, "AGENTS.md"), "--output-format", "stream-json", "--verbose"];
 }
 
 // Claude's state belongs to the run like opencode's: CLAUDE_CONFIG_DIR below
 // the workspace, so no settings, credentials file or session one run leaves
 // reaches a later role. The login is the long-lived token from
-// `claude setup-token` in claude.env, which only the agent unit loads
-// (CLAUDE_CODE_OAUTH_TOKEN); the subprocess
+// `claude setup-token` in claude.env, which the agent unit and, since
+// 15.11.2026, the runner unit load (CLAUDE_CODE_OAUTH_TOKEN); the subprocess
 // scrub keeps it out of the shell the model drives (needs bubblewrap; without
 // it Claude refuses to start and the run falls back, labelled NOTBETRIEB).
 // HOME too: Claude writes caches and its .claude.json there, and the
@@ -255,12 +268,39 @@ export function parseClaudeResult(stdout) {
   return { ok: true, output: text, model: models.join(",") || "unknown" };
 }
 
+// Claude's stream (--output-format stream-json --verbose), one JSON event per
+// line: the last "result" event is the same object as --output-format json,
+// and every tool_use block of an assistant event is one tool call. Lines that
+// are no JSON are skipped; a line too long to keep (lineLimit) may have held a
+// tool call, so it counts as one: the runner's rule "acted, no stand-in" errs
+// to the safe side.
+export const claudeStreamLineLimit = 4_000_000;
+export function claudeStream() {
+  let result = null;
+  let toolUses = 0;
+  return {
+    line(text) {
+      if (text === null) { toolUses += 1; return; }
+      let event;
+      try { event = JSON.parse(text); } catch { return; }
+      if (event?.type === "result") result = event;
+      else if (event?.type === "assistant" && Array.isArray(event.message?.content)) {
+        toolUses += event.message.content.filter((block) => block?.type === "tool_use").length;
+      }
+    },
+    get result() { return result; },
+    get toolUses() { return toolUses; },
+  };
+}
+
 export function cleanReason(text) {
   return String(text).replace(/\s+/g, " ").replace(/[A-Za-z0-9_\-]{32,}/g, "[…]").trim().slice(0, 300);
 }
 
 // One process in its workspace with a deadline: stdout, stderr, exit code.
-function runProcess(executable, args, env, workspace, prompt, timeoutMs) {
+// With onLine, stdout goes line by line to it (an over-long line as null) and
+// is not kept: a long Claude stream must not lose its last line to a bound.
+export function runProcess(executable, args, env, workspace, prompt, timeoutMs, onLine = null) {
   return new Promise((resolve) => {
     const child = spawn(executable, args, { cwd: workspace, env, stdio: ["pipe", "pipe", "pipe"] });
     // A child that dies before reading its input must not crash the broker (EPIPE).
@@ -284,10 +324,18 @@ function runProcess(executable, args, env, workspace, prompt, timeoutMs) {
       forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
     }, Math.max(1000, timeoutMs));
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { if (stdout.length < 2_000_000) stdout += chunk; });
+    let partial = "";
+    let overlong = false;
+    child.stdout.on("data", (chunk) => {
+      if (!onLine) { if (stdout.length < 2_000_000) stdout += chunk; return; }
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop();
+      for (const line of lines) { if (overlong || line.length > claudeStreamLineLimit) { onLine(null); overlong = false; } else onLine(line); }
+      if (partial.length > claudeStreamLineLimit) { partial = ""; overlong = true; }
+    });
     child.stderr.on("data", (chunk) => { if (stderr.length < 200_000) stderr += chunk; });
     child.on("error", (error) => finish({ code: null, spawnError: error.message }));
-    child.on("close", (code) => finish({ code }));
+    child.on("close", (code) => { if (onLine && (partial || overlong)) { if (overlong) onLine(null); else onLine(partial); partial = ""; overlong = false; } finish({ code }); });
   });
 }
 
@@ -309,7 +357,23 @@ async function inWorkspace(request, run) {
   return result;
 }
 
+// The Claude login reaches no answer and no error the broker hands back: a
+// shell of the unit's uid can read it from /proc/<broker>/environ (the runner
+// unit loads it since 15.11.2026, and a plan step or the opencode stand-in could
+// print it), so its exact value and anything shaped like a Claude token are
+// blacked out before the API, the job, Hermes or the verifier see the text.
+export function redactLogin(text, token = process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  if (typeof text !== "string") return text;
+  let out = token && token.length >= 20 ? text.split(token).join("[REDACTED:CLAUDE_LOGIN]") : text;
+  return out.replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, "[REDACTED:CLAUDE_LOGIN]");
+}
+
 export async function runAgent(request) {
+  const result = await runAgentUnredacted(request);
+  return { ...result, ...(result.output !== undefined ? { output: redactLogin(result.output) } : {}), ...(result.error ? { error: redactLogin(result.error) } : {}) };
+}
+
+async function runAgentUnredacted(request) {
   const deadline = Date.now() + roleBudgetMs(request.role);
   const claude = claudeSettings(request.role);
   let notbetrieb = null;
@@ -346,15 +410,26 @@ async function runClaude(request, workspace, claude, deadline) {
 async function runClaudeIn(request, workspace, tmpdir, claude, deadline) {
   const env = claudeEnv(workspace, tmpdir);
   fs.mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
-  const run = await runProcess(claude.executable, claudeArgs(workspace, claude.model, claude.tools), env, workspace, request.prompt, deadline - Date.now());
-  const parsed = parseClaudeResult(run.stdout);
-  if (parsed.ok && run.code === 0) return { ok: true, exitCode: 0, output: parsed.output, engine: { name: "claude", model: parsed.model } };
+  const stream = claudeStream();
+  const run = await runProcess(claude.executable, claudeArgs(workspace, claude.model, claude.tools), env, workspace, request.prompt, deadline - Date.now(), (line) => stream.line(line));
+  const parsed = stream.result ? parseClaudeResult(JSON.stringify(stream.result)) : { ok: false, json: false, reason: "claude returned no JSON result" };
+  // How many of Claude's own permission checks refused a tool call (bypass
+  // means none; the job shows it, so a refusal never stays silent).
+  const denials = Array.isArray(stream.result?.permission_denials) ? stream.result.permission_denials.length : 0;
+  const claudeEngine = (model) => ({ name: "claude", model, ...(denials ? { permissionDenials: denials } : {}) });
+  if (parsed.ok && run.code === 0) return { ok: true, exitCode: 0, output: parsed.output, engine: claudeEngine(parsed.model) };
   // A run that used its whole budget has no time left for a second engine,
   // and its failure is no outage: it fails like any role over budget.
-  if (run.timedOut) return { ok: false, exitCode: run.code, error: "claude did not finish within the role budget", engine: { name: "claude", model: claude.model } };
+  if (run.timedOut) return { ok: false, exitCode: run.code, error: "claude did not finish within the role budget", engine: claudeEngine(claude.model) };
   // Without a JSON result (unknown option, sandbox start) the reason is on stderr.
-  const reason = run.spawnError || (parsed.ok ? `claude exited with ${run.code}` : parsed.json ? parsed.reason : run.stderr.trim().slice(-300) || parsed.reason);
-  return { fallback: cleanReason(reason || "claude failed") };
+  const reason = cleanReason(run.spawnError || (parsed.ok ? `claude exited with ${run.code}` : parsed.json ? parsed.reason : run.stderr.trim().slice(-300) || parsed.reason) || "claude failed");
+  // The runner acts on the host: once Claude has made a tool call, steps may
+  // have run, and a stand-in would run them a second time. It fails like a
+  // runner that failed; only a Claude that never acted is replaced.
+  if (request.role === "runner" && stream.toolUses > 0) {
+    return { ok: false, exitCode: run.code, error: `claude failed after ${stream.toolUses} tool call(s), no stand-in so no step runs twice: ${reason}`, engine: claudeEngine(claude.model) };
+  }
+  return { fallback: reason };
 }
 
 function opencodeModelFor(role) {

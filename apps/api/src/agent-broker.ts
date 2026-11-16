@@ -34,6 +34,8 @@ export interface AgentEngine {
   model: string;
   notbetrieb?: true;
   reason?: string;
+  // Claude's own permission checks that refused a tool call (bypassPermissions: none expected).
+  permissionDenials?: number;
 }
 
 export function isAgentEngine(value: unknown): value is AgentEngine {
@@ -47,6 +49,7 @@ function brokerEngine(value: unknown): AgentEngine | null {
   return {
     name: engine.name.slice(0, 40), model: engine.model.slice(0, 120),
     ...(engine.notbetrieb === true ? { notbetrieb: true as const, reason: typeof engine.reason === "string" ? engine.reason.slice(0, 300) : "unknown" } : {}),
+    ...(Number.isInteger(engine.permissionDenials) && (engine.permissionDenials as number) > 0 ? { permissionDenials: Math.min(engine.permissionDenials as number, 1_000_000) } : {}),
   };
 }
 

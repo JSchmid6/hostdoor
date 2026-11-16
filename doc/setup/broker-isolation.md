@@ -15,7 +15,7 @@ Never add `cockpit-agent` or `cockpit-runner` to `cockpit-executor-client` or gr
 
 - `/etc/wireguard-ops-cockpit/api.env`: envelope and executor-client secrets; no provider key
 - `/etc/wireguard-ops-cockpit/agent.env`: provider key (`DEEPSEEK_API_KEY`) and engine/model selection only (read by both the agent and the runner unit)
-- `/etc/wireguard-ops-cockpit/claude.env`: the Claude login (`CLAUDE_CODE_OAUTH_TOKEN`) only, optional, read by the agent unit alone — never by the runner unit (`doc/setup/plan-engine-claude.md`; every shell role in the agent unit can still read it via `/proc` of its own uid)
+- `/etc/wireguard-ops-cockpit/claude.env`: the Claude login (`CLAUDE_CODE_OAUTH_TOKEN`) only, optional, read by the agent unit and, since 15.11.2026, the runner unit (Jochen, card t_0cb8edbd: the runner on Claude too; `doc/setup/plan-engine-claude.md`). Honest limit: a shell of the same uid can read it via `/proc` of its broker — in the agent unit every plan role's shell, in the runner unit also the opencode stand-in and whatever the reviewed plan runs; the scrub (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`) only keeps it out of the environment of Claude's children, not out of `/proc` of the broker or Claude itself; the broker blacks it out of every answer and error it returns (`redactLogin`)
 - `/etc/wireguard-ops-cockpit/executor.env`: executor broker secret only
 - `/home/hermes/.hermes/credentials/cockpit.token`: Hermes-owned route-scoped bearer token; Control stores only its SHA-256 hash
 - `/etc/wireguard-ops-cockpit/admin-recovery.env`: root-only recovery login, never sourced into an agent service
