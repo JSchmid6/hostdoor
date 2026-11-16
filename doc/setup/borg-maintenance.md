@@ -422,6 +422,22 @@ Grenzen:
   `restore` und `repair` sind nach seiner Anweisung Befunde für Jochen. Strukturell bleiben die
   festen Wurzeln, die Größengrenze von `add`, die cgroup-Prüfung (nur aus einem host-run) und die
   Sperre im Helfer selbst.
+* **Verworfen (15.11.2026, Karte t_ea53f1bd): Freigabe-Markierung im Helfer.** Offen seit 05.11.2026
+  (Karte t_5ce5f79f): die schwächenden Verben (`sources connect|disconnect|restore`, `repair`)
+  sollten in einer host-run-cgroup nur laufen, wenn `cockpit-host-run` für genau diesen Job eine
+  root-eigene Markierung „operatorApproved“ abgelegt hat. Nicht gebaut, weil keine schlichte Form
+  fälschungssicher ist: Die Schritte eines Laufs sind root ohne Sandkasten (`startUnit` in
+  `cockpit-host-run`). Sie können jede Markierung schreiben, das Secret des Schlosses
+  (`COCKPIT_EXECUTION_ENVELOPE_SECRET` in `api.env`) lesen und so selbst signieren, und sie kommen
+  per `systemd-run` aus der cgroup heraus, an der der Helfer den Lauf erkennt. Die Wirkung der
+  Verben erreicht root ohnehin auch ohne Helfer (Konfiguration unter `/etc/borgmatic`, `borg`
+  direkt). Fälschungssicher wäre nur eine Freigabe, die ein Schlüssel außerhalb des Hosts signiert
+  (Passkey/WebAuthn); auch die schützte nur den Weg über den Helfer, und root könnte Helfer oder
+  hinterlegten öffentlichen Schlüssel austauschen. Der Schutz bleibt darum beim Türsteher am
+  ganzen Plan (X4) und beim Netz: Vorhandene Archive schützt der append-only-Schlüssel auf Lab0.
+  Dass `sources disconnect` **künftige** Sicherungen verkleinert, deckt append-only nicht ab; das
+  fängt allein der Türsteher (Befund für Jochen). Analyse: `/opt/data/out/t_ea53f1bd/ANALYSE.md`
+  (Hermes), Zweitprüfung James 11.11.2026 am Kartenkommentar.
 * Mehr Quellen heißen mehr Platz auf der Kiste (RAID, `DF` in `status`). **Größengrenze (Hinweis
   H2, 05.11.2026, gebaut 10.11.2026, Karte t_0ea98639):** eine große Quelle könnte das RAID auf
   Lab0 füllen, dann scheitern alle Nachtläufe. Darum misst `add` die neue Quelle **zusammen mit
