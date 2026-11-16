@@ -474,6 +474,14 @@ describe("doorkeeper X2 judged by effect", () => {
     expect(x2).toContain("(c) it takes itself back");
     expect(x2).toContain("(d) it fits the stated purpose");
     expect(x2).toContain("When in doubt, flag.");
+    // Second review R1 (t_befe7fc7): a protection switched off is no restriction, the
+    // target must not come from the plan, the self-revert has a time bound, and the
+    // fallback window of the reviewer itself is named.
+    expect(x2).toContain("switching off a protection is never \"only restricts\"");
+    expect(x2).toContain("that nothing in this plan creates");
+    expect(x2).toContain("within the short time the plan states and the purpose needs");
+    expect(x2).toContain("creating a file at a path that a runtime drop-in of a Cockpit unit names");
+    expect(x2).toContain("the runs in that window are reviewed by the fallback engine");
   });
 
   it("keeps code, unit files, helpers, sudoers, secrets, persistence, redirects and widening as findings", () => {
@@ -482,7 +490,7 @@ describe("doorkeeper X2 judged by effect", () => {
     expect(x2).toContain("the same drop-in under /etc/systemd/system");
     expect(x2).toContain("any path that exists or might");
     expect(x2).toContain("volatile does not excuse widening");
-    expect(x2).toContain("a self-revert that is missing, does not match the change or is hidden");
+    expect(x2).toContain("a self-revert that is missing, does not match the change, is hidden or comes days later");
     // The other classes are untouched: reading a Cockpit secret stays X1, hidden code X5.
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("Reading a secret listed above is always a finding");
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("code is hidden from review (downloaded and executed, base64, eval");
@@ -490,12 +498,12 @@ describe("doorkeeper X2 judged by effect", () => {
 
   it("the pre-install review treats widening the X2 exception as narrowing G9", () => {
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Authority (X2) is judged by effect");
-    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also widening that exception");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert");
   });
 
   it("every measured case is a valid manifest, and the Cockpit focus still points at the pass cases", () => {
     expect(cases.filter((item) => item.expect === "pass").map((item) => item.id)).toEqual(["pass-fallback-test-on", "pass-fallback-test-off"]);
-    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(8);
+    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(11);
     for (const item of cases) {
       const manifest = parseHostRunManifest(plan(item.manifest));
       expect(manifest, item.id).not.toBeNull();

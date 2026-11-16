@@ -40,9 +40,9 @@ const NONCE = "feedfacecafebeef";
 // A deliberately small pass: the review instructions plus room for about one focus file.
 // Was 16_000 bytes; the instructions grew with the box role in G5 (t_88f1e802), so the
 // room the tests rely on is kept, not the absolute number. 17_000 since the hint on
-// unchanged context in the instructions (t_7ea8785f). 17_700 since G9 names how X2 is
-// judged by effect (t_befe7fc7, +~640 bytes).
-const SMALL_PASS = 17_700;
+// unchanged context in the instructions (t_7ea8785f). 18_100 since G9 names how X2 is
+// judged by effect (t_befe7fc7, +~1 kB).
+const SMALL_PASS = 18_100;
 
 function section(path: string, lines: string[]): { path: string; text: string } {
   return { path, text: `${[`diff --git a/${path} b/${path}`, "--- a/" + path, "+++ b/" + path, ...lines].join("\n")}\n` };
@@ -179,10 +179,10 @@ describe("self-update pre-install review", () => {
     const path = "apps/api/src/hermes-security.ts";
     const hunk = (index: number) => [`@@ -${index * 100 + 1},40 +${index * 100 + 1},40 @@`, ...Array.from({ length: 40 }, (_, line) => `+h${index} l${line} ${"x".repeat(60)}`)];
     const big = section(path, Array.from({ length: 6 }, (_, index) => hunk(index)).flat());
-    // 22_700: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7).
-    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 22_700 });
+    // 23_100: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7).
+    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_100 });
     expect(prompts.length).toBeGreaterThan(1);
-    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 22_700)).toBe(true);
+    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_100)).toBe(true);
     expect(coverage[0]).toMatchObject({ incomplete: [], cut: [], omitted: [] });
     // Every hunk exactly once, whole, with the file header in every part.
     for (let index = 0; index < 6; index += 1) {
@@ -372,7 +372,8 @@ describe("self-update pre-install review", () => {
     const many = Array.from({ length: 6 }, (_, index) => section(`apps/api/src/part-${index}.ts`, ["@@ -1,100 +1,100 @@", ...Array.from({ length: 100 }, (_, line) => `+${index} ${line} ${"p".repeat(60)}`)]));
     const capped = buildUpdateReviewPrompt([diff({
       files: many.map((item) => ({ status: "M", path: item.path, added: 100, deleted: 100, class: "other" })), filesTotal: 6, focusAreas: [], excerpt: many,
-    })], { nonce: NONCE, limit: 24_000, maxPasses: 2 });
+    // 25_000 (was 24_000): room for one part per pass kept when G9 grew (t_befe7fc7).
+    })], { nonce: NONCE, limit: 25_000, maxPasses: 2 });
     expect(capped.prompts).toHaveLength(2);
     expect(capped.coverage[0].incomplete.length).toBeGreaterThan(0);
     expect(capped.coverage[0].omitted).toEqual(capped.coverage[0].incomplete);
