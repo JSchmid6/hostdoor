@@ -357,7 +357,23 @@ async function inWorkspace(request, run) {
   return result;
 }
 
+// The Claude login reaches no answer and no error the broker hands back: a
+// shell of the unit's uid can read it from /proc/<broker>/environ (the runner
+// unit loads it since 15.11.2026, and a plan step or the opencode stand-in could
+// print it), so its exact value and anything shaped like a Claude token are
+// blacked out before the API, the job, Hermes or the verifier see the text.
+export function redactLogin(text, token = process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  if (typeof text !== "string") return text;
+  let out = token && token.length >= 20 ? text.split(token).join("[REDACTED:CLAUDE_LOGIN]") : text;
+  return out.replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, "[REDACTED:CLAUDE_LOGIN]");
+}
+
 export async function runAgent(request) {
+  const result = await runAgentUnredacted(request);
+  return { ...result, ...(result.output !== undefined ? { output: redactLogin(result.output) } : {}), ...(result.error ? { error: redactLogin(result.error) } : {}) };
+}
+
+async function runAgentUnredacted(request) {
   const deadline = Date.now() + roleBudgetMs(request.role);
   const claude = claudeSettings(request.role);
   let notbetrieb = null;

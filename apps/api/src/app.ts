@@ -1383,6 +1383,7 @@ export async function createApp(options: AppOptions = {}) {
   function filterSensitiveContent(text: string): string {
     // Remove API keys, tokens, passwords, and debug noise from output
     return text
+      .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, "[REDACTED:CLAUDE_LOGIN]")
       .replace(/sk-[a-zA-Z0-9]{20,}/g, "[REDACTED:API_KEY]")
       .replace(/glpat-[a-zA-Z0-9_.-]{20,}/g, "[REDACTED:TOKEN]")
       .replace(/eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}/g, "[REDACTED:JWT]")
@@ -2023,9 +2024,9 @@ export async function createApp(options: AppOptions = {}) {
     return output;
   }
 
-  // Which engine planned, researched, reviewed or verified stays on the job
+  // Which engine planned, researched, reviewed, ran or verified stays on the job
   // (output.agentEngine: planner, research, safety, doorkeeper, update-review,
-  // verifier), and a Claude failure that opencode (DeepSeek) stood in for is
+  // runner, verifier), and a Claude failure that opencode (DeepSeek) stood in for is
   // marked NOTBETRIEB in output.notbetrieb — Hermes reports it to Jochen (cards
   // t_936d9b0f, t_dc74af18). updateHermesJob carries both through every later update.
   function recordAgentEngine(jobId: string, role: string, engine: AgentEngine): void {

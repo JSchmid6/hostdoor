@@ -17,7 +17,7 @@ process.env.COCKPIT_AGENT_WORKSPACE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(),
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-home-"));
 // The check derives it from HOME alone, like opencode, which gets no XDG_CONFIG_HOME.
 process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-xdg-"));
-const { assertNoPlantedConfig, claudeStream, claudeStreamLineLimit, runProcess, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
+const { assertNoPlantedConfig, redactLogin, claudeStream, claudeStreamLineLimit, runProcess, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
 const { PROMPT_LIMITS, promptLimit, promptLimitProblem } = await import("../src/prompt-limits.mjs");
 test.after(() => {
   fs.rmSync(process.env.COCKPIT_AGENT_WORKSPACE_ROOT, { recursive: true, force: true });
@@ -571,5 +571,28 @@ test("both units load the optional Claude login; the runner runs on Claude too (
     assert.deepEqual(values("EnvironmentFile"), ["/etc/wireguard-ops-cockpit/agent.env", "-/etc/wireguard-ops-cockpit/claude.env"], name);
     // Claude Code refuses bypassPermissions as root: the units never run as root.
     assert.notEqual(values("User")[0], "root");
+  }
+});
+
+test("the Claude login never leaves the broker in an answer or an error", async () => {
+  const token = `sk-ant-oat01-${"Q".repeat(60)}`;
+  assert.equal(redactLogin(`x ${token} y`, token), "x [REDACTED:CLAUDE_LOGIN] y");
+  // Its shape too, for a value that is not the unit's own.
+  assert.equal(redactLogin(`CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-${"a".repeat(30)}`, ""), "CLAUDE_CODE_OAUTH_TOKEN=[REDACTED:CLAUDE_LOGIN]");
+  const saved = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "plain-login-value-without-prefix-1234567890";
+  // No Claude (the forced fallback of the acceptance test): the stand-in answers.
+  process.env.COCKPIT_CLAUDE_EXECUTABLE = path.join(fakeRoot, "nonexistent");
+  try {
+    // The opencode stand-in (the fake echoes its prompt) prints what it read from /proc.
+    const runner = await runAgent({ requestId: "0e0e0000-1", role: "runner", prompt: `environ: CLAUDE_CODE_OAUTH_TOKEN=${process.env.CLAUDE_CODE_OAUTH_TOKEN}`, });
+    assert.equal(runner.ok, true, runner.error);
+    assert.doesNotMatch(runner.output, /plain-login-value/);
+    assert.match(runner.output, /CLAUDE_CODE_OAUTH_TOKEN=\[REDACTED:CLAUDE_LOGIN\]/);
+    assert.equal(runner.engine.notbetrieb, true);
+    assert.match(runner.engine.reason, /ENOENT/);
+  } finally {
+    delete process.env.COCKPIT_CLAUDE_EXECUTABLE;
+    if (saved === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN; else process.env.CLAUDE_CODE_OAUTH_TOKEN = saved;
   }
 });

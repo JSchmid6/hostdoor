@@ -54,8 +54,10 @@ bypassPermissions --tools Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools 
 stdin. Der Runner bekommt `--tools Bash,Read,Edit,Write,Grep,Glob` (wie opencode build, ohne Web).
 `stream-json`: Der Broker liest die Ereignisse Zeile für Zeile, nimmt das letzte `result` (dasselbe Objekt
 wie bei `json`) und zählt die `tool_use`-Blöcke. Eine Zeile über 4 MB zählt vorsichtshalber als ein
-Werkzeugaufruf. `result.permission_denials` landet als `permissionDenials` am Motor der Rolle, wenn es
-nicht leer ist. Mit Bypass soll es leer bleiben, und eine Ablehnung bleibt so nie still.
+Werkzeugaufruf (die Grenze zählt Zeichen, nicht Bytes). `result.permission_denials` landet als
+`permissionDenials` am Motor der Rolle (`output.agentEngine.<rolle>`), wenn es nicht leer ist. Mit Bypass
+soll es leer bleiben. Hermes meldet von sich aus nur `notbetrieb`; die Abnahme liest `agentEngine`. Beim
+Rückfall trägt der opencode-Motor die Ablehnungen des Claude-Laufs nicht weiter.
 
 - `--safe-mode`: kein CLAUDE.md, keine Skills, Plugins, Hooks, MCP-Server, eigenen Agenten oder
   Befehle — das Gegenstück zu opencodes `--pure` plus `assertNoPlantedConfig`. Die Rollen-Anweisung
@@ -165,7 +167,7 @@ Runner (Verifier und Breaker wie gehabt). Für die lesenden Rollen bleibt der R�
   nie aus einem älteren Ausgabe-Stand (Freigabe-Pfad, Weiterverfolgen nach Neustart). Rollen-Schlüssel:
   `planner`, `research`, `safety` (Plan-Sicherheitsprüfung), `doorkeeper` (Türsteher der Host-Tür),
   `update-review` (Pre-install-Review; mehrere Durchgänge zählen als einer, ein NOTBETRIEB in irgendeinem
-  bleibt stehen), `verifier`. Die Plan-Sicherheitsprüfung trägt den Motor zusätzlich in `safety.details.engine`,
+  bleibt stehen), `runner` (seit 15.11.2026), `verifier`. Die Plan-Sicherheitsprüfung trägt den Motor zusätzlich in `safety.details.engine`,
   auch wenn sie scheitert (Antwort unlesbar oder Claude und Rückfall gescheitert).
 - Sicherheitsarbeit wird nie wegen des Abo-Limits geparkt: Ist das Fenster voll, prüft DeepSeek als
   NOTBETRIEB, statt dass der Job wartet. Eine Zeitüberschreitung des Türstehers ist dagegen „review
@@ -226,16 +228,22 @@ derselbe Bootstrap des Deploy-Skripts, den der DeepSeek-Türsteher auf Lab0 als 
 
 Entscheidung: Safety bleibt auf **Opus** (Jochens Regel: Sicherheitsurteile macht ein dickes Modell;
 Sonnet bestand die Stichprobe, ordnete aber den versteckten Backup-Eingriff schwächer ein). Verifier
-auf **Sonnet** (prüft Zielzustände, kein Sicherheitsurteil).
+auf **Sonnet** (prüft Zielzustände, kein Sicherheitsurteil). Überholt am 15.11.2026: Jochen will auch
+den Verifier auf Opus (Karte t_0cb8edbd), die Vorgabe ist seitdem `opus`.
 
 ## Ehrliche Grenzen
 
-- Der Login gilt für Jochens ganzes Abo, ein Jahr. Jede Rolle mit Shell **in der Agent-Unit**
-  (Planer, Research, Safety und Verifier über Claude, Rückfall über opencode) läuft als
-  `cockpit-agent` und kann ihn aus `/proc/<broker-pid>/environ` oder `/proc/<claude-pid>/environ`
-  lesen; `ProtectProc=invisible` verbirgt nur fremde Nutzer. Der Scrub schützt nur die Umgebung der
-  Kinder, nicht die des Elternprozesses. Gleiche Klasse wie `DEEPSEEK_API_KEY` heute. Die Runner-Unit
-  (eigene Identität) erreicht ihn nicht. Bei Verdacht: Token im Abo widerrufen, neu erzeugen.
+- Der Login gilt für Jochens ganzes Abo, ein Jahr. Jede Rolle mit Shell kann ihn aus
+  `/proc/<broker-pid>/environ` oder `/proc/<claude-pid>/environ` lesen, auch Claudes eigene Shell.
+  Das betrifft die Agent-Unit (Planer, Research, Safety und Verifier über Claude, Rückfall über
+  opencode, als `cockpit-agent`) und seit 15.11.2026 auch die Runner-Unit (als `cockpit-runner`).
+  Dort hat der Runner Schreibwerkzeuge und führt die Befehle des geprüften Plans aus.
+  `ProtectProc=invisible` verbirgt nur fremde Nutzer, der Scrub schützt nur die Umgebung der Kinder,
+  nicht die des Elternprozesses. Gleiche Klasse wie `DEEPSEEK_API_KEY` heute. Was der Broker
+  zurückgibt (Antwort, Fehler), schwärzt er vorher: den genauen Wert und alles in der Form
+  `sk-ant-…` (`redactLogin`). Die API schwärzt die Form noch einmal (`filterSensitiveContent`).
+  Gegen Abfluss über Netz schützt das nicht, dafür sorgen Türsteher und Verifier. Bei Verdacht: Token im
+  Abo widerrufen, neu erzeugen.
 - Abo-Läufe zählen gegen Jochens 5-h-Fenster; ist es voll, läuft NOTBETRIEB (Kosten DeepSeek).
   Opus-Prüfungen großer Diffs (Pre-install-Review, mehrere Durchgänge) belasten es am stärksten.
 - Planer und Türsteher teilen jetzt den Anbieter. Ein gemeinsamer blinder Fleck des Anbieters
