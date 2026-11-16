@@ -17,7 +17,7 @@ process.env.COCKPIT_AGENT_WORKSPACE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(),
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-home-"));
 // The check derives it from HOME alone, like opencode, which gets no XDG_CONFIG_HOME.
 process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-xdg-"));
-const { assertNoPlantedConfig, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
+const { assertNoPlantedConfig, claudeStream, claudeStreamLineLimit, runProcess, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
 const { PROMPT_LIMITS, promptLimit, promptLimitProblem } = await import("../src/prompt-limits.mjs");
 test.after(() => {
   fs.rmSync(process.env.COCKPIT_AGENT_WORKSPACE_ROOT, { recursive: true, force: true });
@@ -394,6 +394,8 @@ case "$PWD" in
   */agent-c1a0fa11*) echo '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}'; exit 1;;
   */agent-c1a0b1a7*) echo '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in"}'; touch "$PWD/../opencode.json"; exit 1;;
   */agent-c1a0bad0*) echo "error: unknown option '--safe-mode'" >&2; exit 2;;
+  */agent-c1a0ac7e*) echo '{"type":"system","subtype":"init"}'; echo '{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Bash","input":{}}]}}'; echo '{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached"}'; exit 1;;
+  */agent-c1a0de11*) cat >/dev/null; echo 'not json'; echo '{"type":"result","subtype":"success","is_error":false,"result":"done","modelUsage":{"claude-opus-5-5":{}},"permission_denials":[{"tool_name":"Bash"},{"tool_name":"Read"}]}'; exit 0;;
 esac
 prompt=$(cat)
 test -d "$HOME" || exit 4
@@ -410,7 +412,7 @@ node -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is
       const result = await runAgent({ requestId: "c1a0de00-1", role, prompt: "plan it" });
       assert.equal(result.ok, true, result.error);
       assert.deepEqual(result.engine, { name: "claude", model: "claude-sonnet-5-5" });
-      assert.match(result.output, /^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model sonnet --tools Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools Bash,Read,Grep,Glob,WebFetch,WebSearch --append-system-prompt-file \S+\/AGENTS\.md --output-format json /);
+      assert.match(result.output, /^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model sonnet --permission-mode bypassPermissions --tools Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools Bash,Read,Grep,Glob,WebFetch,WebSearch --append-system-prompt-file \S+\/AGENTS\.md --output-format stream-json --verbose /);
       // Claude's state belongs to the run; the token reaches it, the DeepSeek key does not.
       const state = `${process.env.COCKPIT_AGENT_WORKSPACE_ROOT}/agent-c1a0de00-1-${role}-[^/]+/\\.run-state`;
       assert.match(result.output, new RegExp(` home=${state}/home config=${state}/claude tmp=/tmp/cockpit-claude-[^/ ]+ `));
@@ -451,15 +453,15 @@ node -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is
       assert.deepEqual(review.engine, { name: "opencode", model: "default" });
     }
     // Without a switch, with the login there, they run on Claude (card t_dc74af18):
-    // safety on opus, the verifier on sonnet, both without web tools; the DeepSeek
+    // safety and (since 15.11.2026) the verifier on opus, both without web tools; the DeepSeek
     // key does not reach them. "claude" says the same explicitly.
     delete process.env.COCKPIT_SAFETY_ENGINE;
     process.env.COCKPIT_VERIFIER_ENGINE = "claude";
-    for (const [role, model] of [["safety", "opus"], ["verifier", "sonnet"]]) {
+    for (const [role, model] of [["safety", "opus"], ["verifier", "opus"]]) {
       const review = await runAgent({ requestId: "c1a0de00-4", role, prompt: "review" });
       assert.equal(review.ok, true, review.error);
       assert.deepEqual(review.engine, { name: "claude", model: "claude-sonnet-5-5" });
-      assert.match(review.output, new RegExp(`^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model ${model} --tools Bash,Read,Grep,Glob --allowedTools Bash,Read,Grep,Glob --append-system-prompt-file \\S+/AGENTS\\.md --output-format json `));
+      assert.match(review.output, new RegExp(`^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model ${model} --permission-mode bypassPermissions --tools Bash,Read,Grep,Glob --allowedTools Bash,Read,Grep,Glob --append-system-prompt-file \\S+/AGENTS\\.md --output-format stream-json --verbose `));
       assert.match(review.output, / scrub=1 token=set deepseek= prompt=review$/);
     }
     process.env.COCKPIT_CLAUDE_SAFETY_MODEL = "fable";
@@ -468,18 +470,44 @@ node -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is
     const reviewFallback = await runAgent({ requestId: "c1a0fa11-2", role: "safety", prompt: "review" });
     assert.equal(reviewFallback.ok, true, reviewFallback.error);
     assert.deepEqual(reviewFallback.engine, { name: "opencode", model: "default", notbetrieb: true, reason: "Not logged in · Please run /login" });
-    // Without the login a reviewer stays on opencode (no NOTBETRIEB: Claude was never meant to run),
-    // and the runner never goes to Claude.
     for (const key of ["COCKPIT_SAFETY_ENGINE", "COCKPIT_VERIFIER_ENGINE", "COCKPIT_CLAUDE_SAFETY_MODEL"]) delete process.env[key];
-    assert.deepEqual((await runAgent({ requestId: "c1a0de00-7", role: "runner", prompt: "run" })).engine, { name: "opencode", model: "default" });
+    // The runner (card t_0cb8edbd): with the login on Claude, opus, opencode build's tools, no web.
+    const runner = await runAgent({ requestId: "c1a0de00-7", role: "runner", prompt: "run" });
+    assert.equal(runner.ok, true, runner.error);
+    assert.deepEqual(runner.engine, { name: "claude", model: "claude-sonnet-5-5" });
+    assert.match(runner.output, /^args=-p --safe-mode --strict-mcp-config --no-session-persistence --model opus --permission-mode bypassPermissions --tools Bash,Read,Edit,Write,Grep,Glob --allowedTools Bash,Read,Edit,Write,Grep,Glob --append-system-prompt-file \S+\/AGENTS\.md --output-format stream-json --verbose /);
+    assert.match(runner.output, / scrub=1 token=set deepseek= prompt=run$/);
+    // Claude failed before it acted (logged out, subscription window): opencode build stands in, labelled.
+    const runnerFallback = await runAgent({ requestId: "c1a0fa11-3", role: "runner", prompt: "run" });
+    assert.equal(runnerFallback.ok, true, runnerFallback.error);
+    assert.deepEqual(runnerFallback.engine, { name: "opencode", model: "default", notbetrieb: true, reason: "Not logged in · Please run /login" });
+    // Claude failed after a tool call: steps may have run, so no stand-in runs them again.
+    const acted = await runAgent({ requestId: "c1a0ac7e-1", role: "runner", prompt: "run" });
+    assert.equal(acted.ok, false);
+    assert.equal(acted.error, "claude failed after 1 tool call(s), no stand-in so no step runs twice: Claude AI usage limit reached");
+    assert.deepEqual(acted.engine, { name: "claude", model: "opus" });
+    // A read-only role still falls back after a tool call.
+    const actedPlanner = await runAgent({ requestId: "c1a0ac7e-2", role: "verifier", prompt: "review" });
+    assert.equal(actedPlanner.ok, true, actedPlanner.error);
+    assert.equal(actedPlanner.engine.notbetrieb, true);
+    // Refusals by Claude's own permission checks are counted on the engine, never silent.
+    const denied = await runAgent({ requestId: "c1a0de11-1", role: "runner", prompt: "run" });
+    assert.equal(denied.ok, true, denied.error);
+    assert.deepEqual(denied.engine, { name: "claude", model: "claude-opus-5-5", permissionDenials: 2 });
+    // Its own switch keeps the runner on opencode, without NOTBETRIEB.
+    process.env.COCKPIT_RUNNER_ENGINE = "opencode";
+    assert.deepEqual((await runAgent({ requestId: "c1a0de00-8", role: "runner", prompt: "run" })).engine, { name: "opencode", model: "default" });
+    delete process.env.COCKPIT_RUNNER_ENGINE;
+    // Without the login reviewers and the runner stay on opencode (no NOTBETRIEB: Claude was never meant to run).
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     assert.deepEqual((await runAgent({ requestId: "c1a0de00-6", role: "safety", prompt: "review" })).engine, { name: "opencode", model: "default" });
+    assert.deepEqual((await runAgent({ requestId: "c1a0de00-9", role: "runner", prompt: "run" })).engine, { name: "opencode", model: "default" });
     // Without the switch the planner stays on opencode.
     delete process.env.COCKPIT_PLAN_ENGINE;
     const plain = await runAgent({ requestId: "c1a0de00-3", role: "planner", prompt: "plan it" });
     assert.deepEqual(plain.engine, { name: "opencode", model: "default" });
   } finally {
-    for (const key of ["COCKPIT_PLAN_ENGINE", "COCKPIT_SAFETY_ENGINE", "COCKPIT_VERIFIER_ENGINE", "COCKPIT_CLAUDE_SAFETY_MODEL", "COCKPIT_CLAUDE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN", "DEEPSEEK_API_KEY"]) {
+    for (const key of ["COCKPIT_PLAN_ENGINE", "COCKPIT_SAFETY_ENGINE", "COCKPIT_VERIFIER_ENGINE", "COCKPIT_RUNNER_ENGINE", "COCKPIT_CLAUDE_SAFETY_MODEL", "COCKPIT_CLAUDE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN", "DEEPSEEK_API_KEY"]) {
       if (key in saved) process.env[key] = saved[key]; else delete process.env[key];
     }
   }
@@ -491,6 +519,24 @@ test("Claude's result is parsed for the answer and the model that answered; reas
   assert.equal(parseClaudeResult("").ok, false);
   assert.equal(parseClaudeResult('{"subtype":"success","is_error":false,"result":"  "}').ok, false);
   assert.equal(cleanReason(`bad token sk-ant-oat01-${"a".repeat(40)}\n next`), "bad token […] next");
+});
+
+test("Claude's stream: the last result event, every tool_use counted, an over-long line counted as one", async () => {
+  const stream = claudeStream();
+  for (const line of ['{"type":"system","subtype":"init"}', "garbage", '{"type":"assistant","message":{"content":[{"type":"tool_use"},{"type":"tool_use"},{"type":"text"}]}}',
+    '{"type":"user","message":{"content":[{"type":"tool_result"}]}}', '{"type":"result","subtype":"success","is_error":false,"result":"ok"}']) stream.line(line);
+  assert.equal(stream.toolUses, 2);
+  assert.equal(stream.result.result, "ok");
+  stream.line(null);
+  assert.equal(stream.toolUses, 3);
+  // runProcess hands over every line, the last one without a newline too, and an over-long one as null.
+  const script = path.join(fakeRoot, "lines");
+  fs.writeFileSync(script, `#!/bin/sh\ncat >/dev/null\necho one\nhead -c ${claudeStreamLineLimit + 10} /dev/zero | tr '\\0' x\necho\nprintf last\n`, { mode: 0o755 });
+  const seen = [];
+  const run = await runProcess(script, [], { PATH: process.env.PATH }, fakeRoot, "", 30000, (line) => seen.push(line === null ? null : line.slice(0, 10)));
+  assert.equal(run.code, 0);
+  assert.deepEqual(seen, ["one", null, "last"]);
+  assert.equal(run.stdout, "");
 });
 
 test("Claude's sandbox sockets fit sun_path: TMPDIR + /claude-socks-<16 hex>.sock stays within 107 characters", () => {
@@ -516,5 +562,14 @@ test("Claude's sandbox sockets fit sun_path: TMPDIR + /claude-socks-<16 hex>.soc
     assert.deepEqual(fs.readdirSync(deep), []);
   } finally {
     fs.rmSync(deep, { recursive: true, force: true });
+  }
+});
+
+test("both units load the optional Claude login; the runner runs on Claude too (card t_0cb8edbd)", () => {
+  for (const name of ["wireguard-ops-cockpit-agent.service", "wireguard-ops-cockpit-runner.service"]) {
+    const { values } = unitFile(name);
+    assert.deepEqual(values("EnvironmentFile"), ["/etc/wireguard-ops-cockpit/agent.env", "-/etc/wireguard-ops-cockpit/claude.env"], name);
+    // Claude Code refuses bypassPermissions as root: the units never run as root.
+    assert.notEqual(values("User")[0], "root");
   }
 });

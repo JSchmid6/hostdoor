@@ -2081,9 +2081,10 @@ export async function createApp(options: AppOptions = {}) {
     if (config.agentBrokerSocket) brokerSocketForRole(config, "runner");
   }
 
-  async function runIsolatedRunner(actor: UserSummary, session: { id: string }, planner: AgentManifest, proposalPath: string, planText: string): Promise<string> {
+  async function runIsolatedRunner(actor: UserSummary, session: { id: string }, planner: AgentManifest, proposalPath: string, planText: string, jobId?: string): Promise<string> {
     assertRunnerCanStart(planText);
-    return await runIsolatedAgent(actor, session, planner, "runner", isolatedRunnerPrompt(proposalPath, planText), "-runner", 10 * 60_000);
+    // With the job: the runner's engine (Claude or the opencode stand-in) stays on it like every other role's.
+    return await runIsolatedAgent(actor, session, planner, "runner", isolatedRunnerPrompt(proposalPath, planText), "-runner", 10 * 60_000, config.opencodeModel, jobId);
   }
 
   function isolatedRunnerPrompt(proposalPath: string, planText: string): string {
@@ -2817,7 +2818,7 @@ export async function createApp(options: AppOptions = {}) {
       // What refuses it before it starts (state steps, no runner broker) is not.
       if (!typedResult) assertRunnerCanStart(planText);
       if (!typedResult) markExecutionStarted(job.id);
-      const runnerRaw = typedResult || await runIsolatedRunner(actor, session, planner, proposalPath, planText);
+      const runnerRaw = typedResult || await runIsolatedRunner(actor, session, planner, proposalPath, planText, job.id);
       const result = typedResult || filterSensitiveContent(extractRunnerHandoff(runnerRaw));
       if (!result) throw new Error("runner produced no structured execution result");
       const runnerSuccess = /STATUS:\s*success/i.test(result);
@@ -3081,7 +3082,7 @@ export async function createApp(options: AppOptions = {}) {
         const typedResult = typed?.result ?? null;
         if (!typedResult) assertRunnerCanStart(reviewedPlan);
         if (!typedResult) markExecutionStarted(job.id);
-        const raw = typedResult || await runIsolatedRunner(actor, session, planner, proposalPath, reviewedPlan);
+        const raw = typedResult || await runIsolatedRunner(actor, session, planner, proposalPath, reviewedPlan, job.id);
         const result = typedResult || filterSensitiveContent(extractRunnerHandoff(raw));
         const runnerSuccess = /STATUS:\s*success/i.test(result);
         const pendingActivations = typed?.pendingActivations ?? [];

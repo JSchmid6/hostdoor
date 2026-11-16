@@ -1,13 +1,22 @@
-# Alle Plan-Rollen auf Claude (Abo), DeepSeek nur als NOTBETRIEB
+# Alle Rollen auf Claude (Abo), DeepSeek nur als NOTBETRIEB
 
 Entscheidung Jochen, 13.11.2026 (Karte t_936d9b0f, Vorlage t_8053933a Variante D): Planer und
 Research laufen mit Claude Sonnet über das Claude-Abo. Entscheidung Jochen, 14.11.2026 (Karte
 t_dc74af18): „ALLES auf Claude, nur Fallback auf DeepSeek“. Seitdem können auch Safety (Plan-
 Sicherheitsprüfung, Türsteher der Host-Tür, Pre-install-Review von self.update/dienste.update; alle
 drei sind die Broker-Rolle `safety`) und Verifier auf Claude laufen. Der Türsteher urteilt über
-Sicherheit und läuft darum auf Opus, der Verifier auf Sonnet. Fällt Claude aus, springt opencode mit
-dem bisherigen Modell der Rolle ein, und der Job trägt **NOTBETRIEB**. Der Runner (`build`, eigene Unit
-ohne Login) bleibt auf opencode.
+Sicherheit und läuft darum auf Opus, der Verifier seit 15.11.2026 ebenfalls (vorher Sonnet). Fällt Claude
+aus, springt opencode mit dem bisherigen Modell der Rolle ein, und der Job trägt **NOTBETRIEB**.
+
+**Runner und Bypass (Jochen, 15.11.2026, Karte t_0cb8edbd):** Auch der Runner (`build`, eigene Unit
+`cockpit-runner`) läuft auf Claude (Opus), sobald seine Unit den Login hat. opencode build springt als
+Rückfall nur ein, solange Claude noch kein Werkzeug aufgerufen hat (Abschnitt NOTBETRIEB). Alle
+Claude-Rollen starten mit `--permission-mode bypassPermissions`. Jochen: „Aus meiner Erfahrung braucht
+es Bypass auf jeden Fall für Admin. Das geht nicht bei sicherheitsrelevanten Jobs auf root, dass etwas
+abgelehnt wird.“ Claude Codes eigene Prüfungen (Pfade außerhalb des Arbeitsordners, geschützte
+Verzeichnisse) lehnten in `-p` Werkzeugaufrufe mitten im Lauf still ab. Die Grenze bleiben die Unit
+(Identität, `ProtectSystem=strict`, kein sudo, `NoNewPrivileges`), der signierte Plan und der Snapshot
+bzw. Rückweg. Die feste `--tools`-Liste bleibt: Prüfer haben kein Schreibwerkzeug.
 
 **Unabhängigkeit (geänderte Regel):** Bis 14.11.2026 sollte der Türsteher eine andere Modellfamilie
 sein als der Planer (`execution-control-model.md`, `host-run.md`; der nie gemergte Zweig
@@ -25,8 +34,10 @@ Zonen hängen am Risiko, nicht am Modell; ein Modellwechsel ändert keine Grenze
 | `COCKPIT_SAFETY_ENGINE` | Safety (Plan-Sicherheitsprüfung, Türsteher, Pre-install-Review): fehlt die Zeile oder ist sie leer, läuft sie über `claude -p`, sobald der Login (`claude.env`) da ist; `=claude` erzwingt Claude; **jeder andere Wert** (gedacht: `opencode`, aber auch ein Tippfehler) hält sie auf opencode, ohne NOTBETRIEB — das ist der Rückweg |
 | `COCKPIT_CLAUDE_SAFETY_MODEL=opus` | Modell der Safety; Vorgabe `opus`. Fable nur nach einem belegten Opus-Fehlschlag |
 | `COCKPIT_VERIFIER_ENGINE` | Verifier: dieselbe Regel wie Safety (fehlt/leer und Login da → Claude; `claude` → Claude; jeder andere Wert → opencode) |
-| `COCKPIT_CLAUDE_VERIFIER_MODEL=sonnet` | Modell des Verifiers; Vorgabe `sonnet` |
-| `CLAUDE_CODE_OAUTH_TOKEN=…` | **in `claude.env`**, nicht in `agent.env`: Langzeit-Login aus `claude setup-token` (ein Jahr gültig). Nur die Agent-Unit lädt `claude.env` (`EnvironmentFile=-…`); die Runner-Unit, die `agent.env` auch lädt, bekommt ihn nie |
+| `COCKPIT_CLAUDE_VERIFIER_MODEL=opus` | Modell des Verifiers; Vorgabe `opus` (seit 15.11.2026, vorher `sonnet`) |
+| `COCKPIT_RUNNER_ENGINE` | Runner: dieselbe Regel wie Safety (fehlt/leer und Login in der Runner-Unit → Claude; `claude` → Claude; jeder andere Wert → opencode build, ohne NOTBETRIEB) |
+| `COCKPIT_CLAUDE_RUNNER_MODEL=opus` | Modell des Runners; Vorgabe `opus` |
+| `CLAUDE_CODE_OAUTH_TOKEN=…` | **in `claude.env`**, nicht in `agent.env`: Langzeit-Login aus `claude setup-token` (ein Jahr gültig). Agent-Unit und, seit 15.11.2026, Runner-Unit laden `claude.env` (`EnvironmentFile=-…`) |
 | `COCKPIT_CLAUDE_ENV_SCRUB=0` | nur als bewusste Ausnahme: schaltet das Abschotten des Logins vor der Shell ab (siehe unten) |
 | `COCKPIT_OPENCODE_MODEL` | bleibt: Modell des Rückfalls für Planer/Research (und des Runners) |
 | `COCKPIT_SAFETY_OPENCODE_MODEL` | bleibt: Modell des Rückfalls für Safety und Verifier |
@@ -37,9 +48,14 @@ Modellwahl bleibt Host-Konfiguration (AGENTS.md, „Models“); das Repo kennt n
 
 ## Wie der Broker Claude startet
 
-`claude -p --safe-mode --strict-mcp-config --no-session-persistence --model <m> --tools
-Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools <dieselben> --append-system-prompt-file
-<workspace>/AGENTS.md --output-format json`, der Prompt auf stdin.
+`claude -p --safe-mode --strict-mcp-config --no-session-persistence --model <m> --permission-mode
+bypassPermissions --tools Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools <dieselben>
+--append-system-prompt-file <workspace>/AGENTS.md --output-format stream-json --verbose`, der Prompt auf
+stdin. Der Runner bekommt `--tools Bash,Read,Edit,Write,Grep,Glob` (wie opencode build, ohne Web).
+`stream-json`: Der Broker liest die Ereignisse Zeile für Zeile, nimmt das letzte `result` (dasselbe Objekt
+wie bei `json`) und zählt die `tool_use`-Blöcke. Eine Zeile über 4 MB zählt vorsichtshalber als ein
+Werkzeugaufruf. `result.permission_denials` landet als `permissionDenials` am Motor der Rolle, wenn es
+nicht leer ist. Mit Bypass soll es leer bleiben, und eine Ablehnung bleibt so nie still.
 
 - `--safe-mode`: kein CLAUDE.md, keine Skills, Plugins, Hooks, MCP-Server, eigenen Agenten oder
   Befehle — das Gegenstück zu opencodes `--pure` plus `assertNoPlantedConfig`. Die Rollen-Anweisung
@@ -74,6 +90,9 @@ Bash,Read,Grep,Glob,WebFetch,WebSearch --allowedTools <dieselben> --append-syste
   bedient (braucht `bubblewrap`). Startet Claude so nicht, fällt der Lauf auf opencode zurück
   (NOTBETRIEB mit Grund) — ein stilles Abschalten gibt es nicht.
 - Ergebnis: der Text aus `result`, das Modell aus `modelUsage` (z. B. `claude-sonnet-5-5`).
+- Claude Code verweigert `bypassPermissions` unter root ohne Sandbox-Kennung. Die Units laufen als
+  `cockpit-agent` bzw. `cockpit-runner`, nie als root. Eine Kennung wie `IS_SANDBOX` setzt der Broker
+  darum nicht.
 
 ## bwrap und AppArmor (Karte t_79e9f6d6)
 
@@ -130,6 +149,12 @@ auf gepflanzte Konfiguration geprüft wird: was die Shell des Claude-Laufs hinte
 Ohne JSON-Ergebnis (unbekannte Option, Sandbox-Start) steht stderr als Grund. Eine Zeitüberschreitung
 von Claude fällt nicht zurück: Das Budget ist dann verbraucht, die Rolle scheitert wie bisher.
 
+**Runner:** Der Rückfall greift nur, solange Claude **kein** Werkzeug aufgerufen hat, etwa bei Start,
+Login, Abo-Fenster oder Netz vor dem ersten Schritt. Nach dem ersten Werkzeugaufruf können Schritte
+schon gelaufen sein, und ein zweiter Motor würde sie noch einmal ausführen. Dann scheitert der Runner mit
+„claude failed after N tool call(s), no stand-in so no step runs twice: …“, wie jeder gescheiterte
+Runner (Verifier und Breaker wie gehabt). Für die lesenden Rollen bleibt der Rückfall wie bisher.
+
 - Broker-Antwort: `engine: {name, model}`, im Rückfall zusätzlich `notbetrieb: true, reason`.
 - Job: `output.agentEngine.<rolle>` (bleibt über alle späteren Updates) und bei Rückfall — auch wenn
   der Rückfall selbst scheitert — `output.notbetrieb = "NOTBETRIEB: planner ran on <modell> (opencode) because Claude failed: <grund>"`,
@@ -165,11 +190,19 @@ von Claude fällt nicht zurück: Das Budget ist dann verbraucht, die Rolle schei
 5. Prüfer (Karte t_dc74af18): nichts einzurichten. Wo `claude.env` liegt, laufen Safety und Verifier
    nach dem Self-Update auf diesen Stand (das die Agent-Unit neu startet) auf Claude; `agent.env`
    bleibt unberührt. Messlauf: ein lesender host.run; `output.agentEngine.doorkeeper` muss
-   `claude-opus-…` und `output.agentEngine.verifier` `claude-sonnet-…` zeigen, ohne `notbetrieb`.
+   `claude-opus-…` und `output.agentEngine.verifier` `claude-opus-…` (seit 15.11.2026) zeigen, ohne `notbetrieb`.
+6. Runner (Karte t_0cb8edbd): Das Self-Update bringt die Runner-Unit mit `EnvironmentFile=-…/claude.env`;
+   mit dem Neustart der Unit läuft er auf Claude. Messlauf: ein Auftrag ohne host-run und ohne
+   typisierte Capability, der also über den Runner geht; `output.agentEngine.runner` muss `claude-opus-…`
+   zeigen, ohne `notbetrieb` und ohne `permissionDenials`.
+7. Rückfalltest je Host: Ein Drop-in `Environment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent` für Agent- und
+   Runner-Unit unter `/run/systemd/system/<unit>.d/` (flüchtig), Units neu starten, einen Auftrag laufen
+   lassen. Er muss mit `notbetrieb` für jede gelaufene Rolle abschließen. Danach den Drop-in löschen und die
+   Units neu starten.
 
 Rückweg je Rolle: Planer/Research `COCKPIT_PLAN_ENGINE` aus `agent.env` nehmen, Safety bzw. Verifier
 `COCKPIT_SAFETY_ENGINE=opencode` bzw. `COCKPIT_VERIFIER_ENGINE=opencode` setzen, dann die Agent-Unit neu
-starten. Erst wenn keine Rolle mehr Claude nutzt: `claude.env` löschen (ohne Login bleiben alle Rollen
+starten; Runner `COCKPIT_RUNNER_ENGINE=opencode`, dann die Runner-Unit neu starten. Erst wenn keine Rolle mehr Claude nutzt: `claude.env` löschen (ohne Login bleiben alle Rollen
 auf opencode, ohne NOTBETRIEB).
 
 ## Rücktest vor der Umstellung (14.11.2026, Karte t_dc74af18)

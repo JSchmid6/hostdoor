@@ -1,5 +1,5 @@
 [Unit]
-Description=WireGuard Ops Cockpit isolated runner broker (opencode build)
+Description=WireGuard Ops Cockpit isolated runner broker (Claude, opencode build as stand-in)
 After=network-online.target
 Wants=network-online.target
 
@@ -21,6 +21,10 @@ Environment=COCKPIT_AGENT_WORKSPACE_ROOT=/var/lib/wireguard-ops-runner/sessions
 Environment=COCKPIT_OPENCODE_CONFIG=/var/lib/wireguard-ops-runner/.config/opencode/opencode.jsonc
 Environment=COCKPIT_AGENT_BROKER_ROLES=runner
 EnvironmentFile=/etc/wireguard-ops-cockpit/agent.env
+# The Claude login (CLAUDE_CODE_OAUTH_TOKEN): since 15.11.2026 the runner runs on
+# Claude too (Jochen, card t_0cb8edbd), with the same shielding as the plan roles
+# (subprocess scrub, state per run, --safe-mode). Optional: without it, opencode.
+EnvironmentFile=-/etc/wireguard-ops-cockpit/claude.env
 RuntimeDirectory=cockpit-runner
 RuntimeDirectoryMode=0770
 ExecStart=/opt/node-v22.23.4-linux-x64/bin/node /opt/wireguard-ops-cockpit/apps/agent-broker/src/index.mjs
