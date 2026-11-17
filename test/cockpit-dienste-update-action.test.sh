@@ -77,5 +77,62 @@ chown 0 "$FIX/repo/bin/uebernehmen"
 mv "$FIX/repo/bin/uebernehmen" "$FIX/repo/bin/echt" && ln -s echt "$FIX/repo/bin/uebernehmen"
 check "Runner als Symlink" 67 status
 
+# show <path>: read-only review input for the doorkeeper (doc/setup/host-run.md,
+# "Code aus geprüften Repos"), against a real git repository.
+GITREPO="$FIX/gitrepo"
+mkdir -p "$GITREPO/bin" "$GITREPO/deploy/units"
+chmod 750 "$GITREPO"
+cp "$FIX/repo/bin/echt" "$GITREPO/bin/uebernehmen"
+printf '#!/usr/bin/python3\nprint("werkzeug")\n' > "$GITREPO/bin/werkzeug"
+printf '[Service]\nExecStart=/opt/server-dienste/bin/werkzeug\n' > "$GITREPO/deploy/units/werkzeug.service"
+head -c 70000 /dev/zero | tr '\0' 'x' > "$GITREPO/bin/gross"
+chmod 755 "$GITREPO/bin/uebernehmen" "$GITREPO/bin/werkzeug"
+git -C "$GITREPO" init -q
+git -C "$GITREPO" -c user.name=t -c user.email=t@t add -A
+git -C "$GITREPO" -c user.name=t -c user.email=t@t commit -qm stand
+GITHEAD="$(git -C "$GITREPO" rev-parse HEAD)"
+export COCKPIT_DIENSTE_REPO_DIR="$GITREPO"
+field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print(json.dumps(v) if not isinstance(v,str) else v)' "$FIX/out" "$1"; }
+expect() { # expect <name> <field> <value>
+  local got; got="$(field "$2" 2>/dev/null || echo FEHLT)"
+  if [ "$got" = "$3" ]; then echo "GRÜN $1"; else echo "ROT  $1: $2=$got statt $3"; fails=$((fails + 1)); fi
+}
+
+check "show: sauberer Stand" 0 show bin/werkzeug
+expect "show: head" head "$GITHEAD"
+expect "show: gleich HEAD" matchesHead true
+expect "show: Baum sauber" treeClean true
+expect "show: nicht abgeschnitten" truncated false
+expect "show: sha256" sha256 "$(sha256sum "$GITREPO/bin/werkzeug" | cut -d' ' -f1)"
+[ "$(field contentBase64 | base64 -d)" = "$(cat "$GITREPO/bin/werkzeug")" ] && echo "GRÜN show: Inhalt" || { echo "ROT  show: Inhalt"; fails=$((fails + 1)); }
+check "show: Unit-Datei" 0 show deploy/units/werkzeug.service
+expect "show: Unit gleich HEAD" matchesHead true
+check "show: große Datei" 0 show bin/gross
+expect "show: große Datei abgeschnitten" truncated true
+expect "show: große Datei Größe" size 70000
+[ "$(field contentBase64 | base64 -d | wc -c)" -eq 65536 ] && echo "GRÜN show: Schnitt bei 65536" || { echo "ROT  show: Schnitt"; fails=$((fails + 1)); }
+check "show: fehlt" 0 show bin/gibtsnicht
+expect "show: fehlt gemeldet" exists false
+echo 'print("anders")' >> "$GITREPO/bin/werkzeug"
+check "show: geänderte Datei" 0 show bin/werkzeug
+expect "show: geändert ≠ HEAD" matchesHead false
+expect "show: Baum schmutzig" treeClean false
+git -C "$GITREPO" checkout -q -- bin/werkzeug
+printf 'neu\n' > "$GITREPO/bin/unversioniert"
+check "show: unversionierte Datei" 0 show bin/unversioniert
+expect "show: unversioniert ≠ HEAD" matchesHead false
+expect "show: kein HEAD-Blob" headBlob ""
+expect "show: kein Inhalt unversioniert" contentBase64 ""
+ln -s werkzeug "$GITREPO/bin/verweis"
+check "show: Symlink" 65 show bin/verweis
+ln -s / "$GITREPO/wurzel"
+check "show: Symlink im Weg" 65 show wurzel/etc/hostname
+check "show: .git" 65 show .git/config
+check "show: .." 65 show ../repo/bin/echt
+check "show: absolut" 65 show /etc/hostname
+check "show: Ordner" 65 show bin
+check "show: Leerzeichen" 65 show "bin/a b"
+check "show: Zusatzargument" 64 show bin/werkzeug extra
+
 echo
 [ "$fails" -eq 0 ] && echo "alles grün" || { echo "$fails rot"; exit 1; }

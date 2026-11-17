@@ -17,6 +17,12 @@ import {
   parseHostRunReviewAnswer,
   parseHostRunStatus,
   verifyHostRunFindings,
+  parseReviewedFileShow,
+  reviewedFileFailure,
+  reviewedFileStandIssue,
+  reviewedInstallJob,
+  reviewedRepositoryPaths,
+  MAX_REVIEWED_FILES,
   type HostRunManifest,
   type HostRunReviewOutcome,
 } from "../src/host-run.js";
@@ -452,5 +458,100 @@ describe("host-run manifest from the trusted intent", () => {
     expect(plannerHostRunCopy(block.replace("{{.Names}}", "{{.ID}}"), expected)).toBe("differs");
     expect(plannerHostRunCopy(block.replace('\\"$(dpkg --audit)\\"', '"$(dpkg --audit)"'), expected)).toMatch(/^invalid \(host-run manifest is not valid JSON: .+\)$/);
     expect(plannerHostRunCopy("## Plan\nnothing", expected)).toBe("absent");
+  });
+});
+
+// Card t_81392ccb: code from reviewed repositories (server-dienste).
+describe("host door: code from reviewed repositories", () => {
+  const head = "1".repeat(40);
+  const manifest = parseHostRunManifest(plan({
+    version: "cockpit-host-run/v1", name: "werkzeug", purpose: "run the reviewed tool", mutates: true,
+    steps: [
+      { name: "unit", run: "install -m 0644 /opt/server-dienste/deploy/x/werkzeug.service /etc/systemd/system/\nsystemctl daemon-reload" },
+      { name: "run", run: "/usr/bin/python3 /opt/server-dienste/bin/werkzeug anwenden; ls /opt/server-dienste/ /opt/server-dienste/bin/ \"/opt/server-dienste/bin/werkzeug\"" },
+      { name: "odd", run: "cat /opt/server-dienste/../etc/shadow /opt/server-dienste/.git/config /opt/server-diensteX/bin/y /opt/server-dienste/bin/werkzeug." },
+    ],
+    checks: [{ name: "status", run: "/usr/bin/python3 /opt/server-dienste/bin/werkzeug status" }],
+    rollback: ["/usr/bin/python3 /opt/server-dienste/bin/rueck aufheben"],
+  }))!;
+  const showAnswer = (path: string, content: string, overrides: Record<string, unknown> = {}) => JSON.stringify({
+    ok: true, path, exists: true, head, headBlob: "a".repeat(40), fileBlob: "a".repeat(40), matchesHead: true, treeClean: true,
+    sha256: "b".repeat(64), size: Buffer.byteLength(content), truncated: false, contentBase64: Buffer.from(content).toString("base64"), ...overrides,
+  });
+
+  it("names every file below the repository in plan order, once, and skips directories and refused forms", () => {
+    expect(reviewedRepositoryPaths(manifest)).toEqual([
+      { repository: "/opt/server-dienste", path: "deploy/x/werkzeug.service" },
+      { repository: "/opt/server-dienste", path: "bin/werkzeug" },
+      { repository: "/opt/server-dienste", path: "bin/rueck" },
+    ]);
+  });
+
+  it("reads the helper's answer field by field and never turns a broken one into a clean stand", () => {
+    const ref = { repository: "/opt/server-dienste", path: "bin/werkzeug" };
+    const good = parseReviewedFileShow(showAnswer("bin/werkzeug", "print(1)\r\n"), ref);
+    expect(good).toMatchObject({ exists: true, head, matchesHead: true, treeClean: true, content: "print(1)\n", error: null });
+    expect(parseReviewedFileShow("not json", ref).error).toBe("the helper returned no JSON");
+    expect(parseReviewedFileShow(showAnswer("bin/other", "x"), ref).error).toBe("the helper returned an unexpected answer");
+    expect(parseReviewedFileShow(showAnswer("bin/werkzeug", "x", { head: "HEAD" }), ref).error).toContain("lacks head");
+    expect(parseReviewedFileShow(showAnswer("bin/werkzeug", "x", { matchesHead: "true" }), ref).matchesHead).toBe(false);
+    expect(parseReviewedFileShow(showAnswer("bin/werkzeug", "a\u0000b"), ref).content).toBeNull();
+    expect(parseReviewedFileShow(showAnswer("bin/werkzeug", "x", { size: 70_000 }), ref).truncated).toBe(true);
+    expect(parseReviewedFileShow(JSON.stringify({ ok: true, path: "bin/werkzeug", exists: false }), ref)).toMatchObject({ exists: false, error: null });
+  });
+
+  it("finds the stand's review only in the Cockpit's own finished jobs of the same repository", () => {
+    const job = (id: string, status: string, review: Record<string, unknown> | null, approval?: string) => ({ id, status, output: review ? { updateReview: review, ...(approval ? { approval: { decision: approval } } : {}) } : null });
+    const bound = { kind: "dienste", result: "pass", bindings: [{ sha: head }] };
+    expect(reviewedInstallJob([job("a", "completed", bound)], "dienste", head)).toBe("a");
+    expect(reviewedInstallJob([job("a", "failed_execution", bound)], "dienste", head)).toBeNull();
+    expect(reviewedInstallJob([job("a", "completed", { ...bound, kind: "self" })], "dienste", head)).toBeNull();
+    expect(reviewedInstallJob([job("a", "completed", { ...bound, bindings: [{ sha: "2".repeat(40) }] })], "dienste", head)).toBeNull();
+    expect(reviewedInstallJob([job("a", "completed", { ...bound, result: "finding" })], "dienste", head)).toBeNull();
+    expect(reviewedInstallJob([job("a", "completed", { ...bound, result: "finding" }, "approved")], "dienste", head)).toBe("a");
+    expect(reviewedInstallJob([job("a", "completed", { ...bound, result: "incomplete" }, "rejected")], "dienste", head)).toBeNull();
+    expect(reviewedInstallJob([job("a", "completed", null)], "dienste", head)).toBeNull();
+  });
+
+  it("names why a file is not the reviewed stand; an absent or unread-by-limit file is no stand issue", () => {
+    const ref = { repository: "/opt/server-dienste", path: "bin/werkzeug" };
+    const clean = { ...parseReviewedFileShow(showAnswer("bin/werkzeug", "x"), ref), reviewedBy: "job-1" };
+    expect(reviewedFileStandIssue(clean)).toBeNull();
+    expect(reviewedFileStandIssue({ ...clean, matchesHead: false })).toContain("is not byte for byte the file of the installed commit");
+    expect(reviewedFileStandIssue({ ...clean, treeClean: false })).toContain("uncommitted changes");
+    expect(reviewedFileStandIssue({ ...clean, reviewedBy: null })).toContain("no review of the Cockpit approved");
+    expect(reviewedFileStandIssue(reviewedFileFailure(ref, "executor down"))).toContain("could not be read (executor down)");
+    expect(reviewedFileStandIssue(parseReviewedFileShow(JSON.stringify({ ok: true, path: "bin/werkzeug", exists: false }), ref))).toBeNull();
+    expect(reviewedFileStandIssue(reviewedFileFailure(ref, `more than ${MAX_REVIEWED_FILES} files named`, true))).toBeNull();
+  });
+
+  it("shows files whole within the budget; one that does not fit is named unseen, never makes the review incomplete, and its lines are no evidence", () => {
+    const ref = (path: string) => ({ repository: "/opt/server-dienste", path });
+    const small = { ...parseReviewedFileShow(showAnswer("deploy/x/werkzeug.service", "[Service]\nExecStart=/opt/server-dienste/bin/werkzeug"), ref("deploy/x/werkzeug.service")), reviewedBy: "job-1" };
+    const big = { ...parseReviewedFileShow(showAnswer("bin/werkzeug", "x = 1\n".repeat(20_000)), ref("bin/werkzeug")), reviewedBy: "job-1" };
+    const material = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, big] });
+    expect(material.complete).toBe(true);
+    expect(material.files.map((file) => file.shown)).toEqual([true, false]);
+    expect(material.prompt).toContain("F1:L2  ExecStart=/opt/server-dienste/bin/werkzeug");
+    expect(material.prompt).toContain("F2 /opt/server-dienste/bin/werkzeug: sha256");
+    expect(material.prompt).toContain("content not shown: it does not fit the review budget (unseen code)");
+    expect(material.prompt).not.toContain("F2:L1");
+    const answer = parseHostRunReviewAnswer("VERDICT: flag\nFINDING: a\nCLASS: X5\nWHERE: F2:L1\nCODE: x = 1\nPATH: runs unseen code as root here\nSEVERITY: high\nFINDING: b\nCLASS: X2\nWHERE: F1:L2\nCODE: ExecStart=/opt/server-dienste/bin/werkzeug\nPATH: a permanent root unit the purpose does not explain\nSEVERITY: medium");
+    const verified = verifyHostRunFindings(answer, manifest, material.files);
+    expect(verified.findings.map((finding) => finding.evidenced)).toEqual([false, true]);
+    // Without files the plan alone: F ids are no material.
+    expect(verifyHostRunFindings(answer, manifest).findings.every((finding) => !finding.evidenced)).toBe(true);
+  });
+
+  it("tells the doorkeeper that shown code counts as written in the plan and that a stand issue stops anyway", () => {
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("A file shown there in full counts as written in this plan");
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("A file shown only in part, or not shown at all, stays unseen code.");
+    const ref = { repository: "/opt/server-dienste", path: "bin/werkzeug" };
+    const dirty = { ...parseReviewedFileShow(showAnswer("bin/werkzeug", "x", { matchesHead: false }), ref), reviewedBy: "job-1" };
+    expect(buildHostRunReviewPrompt(manifest, { nonce: "n", files: [dirty] }).prompt).toContain("NOT the reviewed stand");
+    const outcome: HostRunReviewOutcome = { manifestHash: "h", complete: true, missing: [], focus: [], answer: { verdict: "pass", findings: [], notes: "", problem: null }, reviewedFiles: [dirty] };
+    expect(hostRunPolicy(manifest, outcome)).toMatchObject({ status: "blocked_user_approval", allowed: false });
+    expect(hostRunPolicy(manifest, { ...outcome, reviewedFiles: [{ ...dirty, matchesHead: true }] })).toMatchObject({ status: "ready", allowed: true });
+    expect(hostRunPolicy(manifest, { ...outcome, reviewedFiles: [] })).toMatchObject({ status: "ready" });
   });
 });

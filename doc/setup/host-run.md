@@ -131,6 +131,50 @@ pin shows you the hash, not the code“). Der Weg ist das Muster der Units: Inha
 `cat > /pfad <<'EOF' … EOF` oder `install -m 0755 /dev/stdin /pfad <<'EOF' … EOF` in den Lauf, eine
 Hash-Prüfung danach ist erlaubt.
 
+### Code aus geprüften Repos (17.11.2026, Karte t_81392ccb)
+
+Auslöser: Job 62c0fd6e (Ausgangs-Sperre Schritt 1, 15.11.2026). Der Plan rief
+`/usr/bin/python3 /opt/server-dienste/bin/ausgangs-sperre …` und installierte zwei Units aus
+`/opt/server-dienste/deploy/…`. Der Türsteher sah nur die Namen — sein Sandkasten darf das
+root-eigene Repo (0750) nicht lesen, „Permission denied“ — und meldete X5/X2. Jochen musste klicken,
+obwohl die eigene `dienste.update`-Prüfung des Cockpits genau diesen Stand freigegeben hatte (Job
+a6c83679, Commit 719ea9db). Jochen (15.11.): „Wollten wir nicht dafür sorgen, dass der Prüfer die
+Skripte auch bekommt?“
+
+Seitdem liest das Cockpit diese Dateien selbst und legt sie dem Türsteher vor:
+
+- **Welche Dateien:** jeder Pfad unter einem geprüften Repo, den Schritte, Prüfschritte oder Rückweg
+  nennen (`reviewedRepositoryPaths`, Liste `REVIEWED_REPOSITORIES`, heute nur `/opt/server-dienste`),
+  höchstens 8 je Plan (`MAX_REVIEWED_FILES`). Das Herauslesen ist Material, nie ein Durchlass: ein Pfad,
+  den es übersieht (zusammengesetzt, versteckt), bleibt für den Türsteher ungesehener Code — X5 wie
+  bisher. Weitere Repos, deren Installation das Cockpit selbst prüft, kommen mit einem Eintrag dazu.
+- **Wie gelesen:** über den Executor (`dienste.show <pfad>`) und den vorhandenen Helfer
+  `cockpit-dienste-update-action show <pfad>` als root, nur lesend: nur eine reguläre Datei unter dem
+  Repo, kein Symlink auf dem Weg, keine Komponente mit Punkt am Anfang (kein `.git`, kein `..`); er
+  liefert sha256, Größe, den installierten HEAD, ob die Datei Byte für Byte dem Blob in HEAD gleicht
+  und ob der versionierte Baum sauber ist, den Inhalt (höchstens 64 KiB, Schnitt gekennzeichnet) nur
+  für Dateien, die HEAD versioniert — der Helfer zeigt, was git ohnehin hält (wie `dienste.diff`).
+- **Nachweis „geprüfter Stand“:** ein abgeschlossener Job des Cockpits selbst, dessen
+  Vor-Installations-Prüfung dieses Repos (`output.updateReview`, `kind: dienste`) den installierten
+  Commit gebunden hat und `pass` ergab oder von Jochen freigegeben wurde (`reviewedInstallJob`). Nur die
+  eigene Job-Datenbank zählt — kein Marker, kein Kommentar, nichts, was der Antragsteller schreibt
+  (Lehre aus PR #74, Befund B1: ein Nachweis, den James selbst setzen kann, ist keiner).
+- **Türsteher:** der Abschnitt „Code from reviewed repositories“ steht im Material, jede Datei mit
+  Kennung `F<n>`, Stand und Zeilen `F<n>:L<zeile>`. Eine ganz gezeigte Datei zählt als im Plan
+  geschrieben: der Türsteher prüft sie wie Planzeilen (X1–X6 gelten), sie ist kein verborgener Code,
+  eine gezeigte Unit keine ungesehene Unit; Module, die sie aus demselben geprüften, sauberen Stand lädt,
+  ebenfalls nicht. Befunde dürfen `F<n>:L<zeile>` als Beleg nennen. Dateien gehen ganz oder gar nicht
+  mit; was nicht ins Budget passt, heißt „content not shown … (unseen code)“ und macht die Prüfung
+  nicht unvollständig — dann urteilt der Türsteher wie bisher.
+- **Nicht der geprüfte Stand → Jochen:** weicht eine genannte Datei vom installierten Commit ab, ist
+  der Baum schmutzig, hat keine Cockpit-Prüfung den Commit freigegeben oder ist die Datei nicht
+  lesbar, endet der Job `blocked_user_approval` mit dem Grund — auch bei `pass` des Türstehers (wie der
+  Risiko-Riegel). Das ist ein Hash-Vergleich, kein Textmuster; er kann nur anhalten, nie durchlassen.
+  Eine nicht vorhandene Datei ist kein Code, der läuft (schreibt der Lauf sie, steht ihr Inhalt im Plan).
+- **Ehrliche Grenze:** Gelesen wird zur Prüfzeit. Wer zwischen Prüfung und Lauf als root im Repo
+  schreibt, ist ohnehin root. Die `dienste.update`-Prüfung sieht Diffs; ihr Vertrauensanker ist der
+  installierte Stand, wie beim Supervisor selbst.
+
 Bis 13.11.2026 lehnte zusätzlich ein Shell-Lexer in `parseHostRunManifest` (`hiddenPinnedScripts`)
 solche Pläne ab. Er ist ausgebaut (Karte t_abe2651b, siehe „Keine Textmuster-Riegel“ unten): sieben
 Nachschärf-Runden in einer Woche haben gezeigt, dass ein Textfilter jede Shell-Form nachbauen muss und
@@ -610,7 +654,8 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
 - INCOMPLETE ist nie ein Durchlass. James klärt die Ursache (Einsammeln reparieren, Lauf
   wiederholen) und reicht neu ein; kommt er nicht weiter, fragt er Jochen selbst.
 - Harte Blocker, die unabhängig vom Prüfergebnis zu Jochen gehen: Risiko-Riegel (Abschnitt 2b, erklärtes `exposure`/`data_loss`/
-  `identity_or_secret`, nur `host.run`); für die typisierten Türen die Plan-Policy (`evaluatePlanPolicy`: Risikozone rot, nicht autorisierte Capability, `shell.exception`, `borg.repair`).
+  `identity_or_secret`, nur `host.run`); Code aus einem geprüften Repo, der nicht der geprüfte Stand ist
+  (Abschnitt 2, „Code aus geprüften Repos“, nur `host.run`); für die typisierten Türen die Plan-Policy (`evaluatePlanPolicy`: Risikozone rot, nicht autorisierte Capability, `shell.exception`, `borg.repair`).
 - Die Sicherungskette vor einem verändernden Lauf (borg-Prüfung, Snapshot) hängt nicht an dieser
   Matrix und bleibt unverändert.
 - **Zweitprüfung (Jochen, 07.11.2026, „ja alles“, Punkt 4b), nur Selbstupdate:** Prüft das Cockpit
@@ -651,7 +696,12 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   ein lesender Lauf räumt nach einem gescheiterten apt-Schritt nicht auf, meldet nur `dpkg --audit`).
 - `apps/api/test/state-steps.test.ts`: die Erkennung und die Kennzeichnung im Manifest.
 - `apps/api/test/host-run.test.ts`: Manifest, Fokus (der `/etc/apt`-Fall stoppt nicht mehr),
-  Prompt, Belegprüfung, Entscheidung, Ergebnis.
+  Prompt, Belegprüfung, Entscheidung, Ergebnis; Code aus geprüften Repos (Pfade, Helfer-Antwort,
+  Nachweis aus der Job-Datenbank, Stand-Gründe, Budget, Belege auf `F<n>:L<zeile>`).
+- `apps/api/test/host-run-flow.test.ts`, Block „code from reviewed repositories (job 62c0fd6e)“:
+  Rücktest mit dem Manifest von Job 62c0fd6e — gleicher Stand wie die freigegebene `dienste.update`-
+  Prüfung → `pass` startet den Lauf ohne Klick; abweichender Hash, schmutziger Baum, keine freigegebene
+  Prüfung oder unlesbar → `blocked_user_approval` trotz `pass`.
 - `apps/api/test/host-run-flow.test.ts`: der Weg durch die API mit Brokern als Fakes — `pass`
   startet trotz `*.save`-Pfad und borg-Repair-Zeile (kein Regel-Stopp), ein belegter Befund geht
   an Jochen (`gatePassed` fehlt) und nach der Freigabe läuft genau dieser Plan (`operatorApproved`,
@@ -660,7 +710,9 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   Runner.
 - `apps/api/test/host-run-resume.test.ts`: API-Neustart während eines Laufs (Broker als Fakes),
   auch wenn die API zwischen Start und Startmarke starb (`hostRunRequestedAt`).
-- `apps/executor-broker/test/index.test.mjs`: `host.run`/`host.status`.
+- `apps/executor-broker/test/index.test.mjs`: `host.run`/`host.status`, `dienste.show` (Pfadform).
+- `sudo bash test/cockpit-dienste-update-action.test.sh`: `show <pfad>` gegen ein echtes git-Repo
+  (sauber, geändert, unversioniert ohne Inhalt, Schnitt bei 64 KiB, Symlink, `.git`, `..`).
 - `apps/api/test/host-snapshot.test.ts`: `cockpit-host-snapshot` selbst — vollständige, private
   Kopie (`/etc`-Archiv gelesen, Paket- und Unit-Listen, Manifest zuletzt), Rotation nur der eigenen
   Namensform, Name/Bestand/Platz verweigert, kein halber Snapshot bei einem Fehler.

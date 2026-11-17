@@ -36,7 +36,13 @@ const retentionAnomaly = /^[a-f0-9]{16}$/;
 const selfUpdateActions = new Set(["self.update", "self.status", "self.diff"]);
 // server-dienste (the root supervisor of the agent's Docker services): the same
 // three forms, installed by its own helper, reviewed with its own guarantees.
-const diensteUpdateActions = new Set(["dienste.update", "dienste.status", "dienste.diff"]);
+const diensteUpdateActions = new Set(["dienste.update", "dienste.status", "dienste.diff", "dienste.show"]);
+// dienste.show: one file of the installed server-dienste stand for the host
+// door's doorkeeper (doc/setup/host-run.md, "Code aus geprüften Repos"); the
+// helper checks the path form again and reads only below its repository.
+const diensteShowPath = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*(?:\/[A-Za-z0-9_][A-Za-z0-9_.+-]*){0,7}$/;
+// 64 KiB of content base64-encoded plus the hashes; anything larger is refused.
+const diensteShowOutputLimit = 120_000;
 const reviewedUpdates = new Set(["self.update", "dienste.update"]);
 const selfUpdateSha = /^[a-f0-9]{40}$/;
 const reviewedDiffHash = /^[a-f0-9]{64}$/;
@@ -64,6 +70,7 @@ export function validateRequest(value, now = Date.now()) {
   if ((action === "self.update" || action === "self.diff") && (typeof target !== "string" || !selfUpdateSha.test(target))) throw new Error("self-update commit is not allowlisted");
   if (action === "dienste.status" && target !== "state") throw new Error("dienste status target is not allowlisted");
   if ((action === "dienste.update" || action === "dienste.diff") && (typeof target !== "string" || !selfUpdateSha.test(target))) throw new Error("dienste commit is not allowlisted");
+  if (action === "dienste.show" && (typeof target !== "string" || target.length > 200 || !diensteShowPath.test(target))) throw new Error("dienste path is not allowlisted");
   // Every update carries the hash of the diff the running Cockpit reviewed;
   // the runner recomputes it and refuses a mismatch before anything deploys.
   if (reviewedUpdates.has(action) && (typeof value.payload.diffSha256 !== "string" || !reviewedDiffHash.test(value.payload.diffSha256))) throw new Error(`${action} requires the reviewed diff sha256`);
@@ -108,8 +115,8 @@ export function execute(payload) {
       // diff hash on its own. *.diff is the read-only review input.
       const verb = payload.action.slice(payload.action.indexOf(".") + 1);
       const selfArgs = verb === "update" ? [payload.target, payload.diffSha256]
-        : verb === "diff" ? ["diff", payload.target] : ["status"];
-      const outputLimit = verb === "diff" ? selfDiffOutputLimit : 20000;
+        : verb === "diff" ? ["diff", payload.target] : verb === "show" ? ["show", payload.target] : ["status"];
+      const outputLimit = verb === "diff" ? selfDiffOutputLimit : verb === "show" ? diensteShowOutputLimit : 20000;
       const updateHelper = diensteUpdateActions.has(payload.action) ? diensteUpdateHelper : selfUpdateHelper;
       const child = spawn("sudo", ["-n", updateHelper, ...selfArgs], { env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "pipe"] });
       let selfOutput = ""; let selfError = "";
@@ -118,7 +125,7 @@ export function execute(payload) {
       child.stderr.on("data", (chunk) => { selfError += chunk; });
       child.on("error", (reason) => resolve({ ok: false, error: reason.message }));
       child.on("close", (code) => {
-        if (code === 0 && verb === "diff" && selfOutput.length > outputLimit) {
+        if (code === 0 && (verb === "diff" || verb === "show") && selfOutput.length > outputLimit) {
           resolve({ ok: false, exitCode: code, error: `${payload.action} output exceeds ${outputLimit} characters` });
           return;
         }
