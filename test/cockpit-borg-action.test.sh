@@ -1069,7 +1069,7 @@ if [ -z "\$q" ]; then
   exit 0
 fi
 case "\$q" in
-  "SELECT CURRENT_USER()") echo "\$u@localhost" ;;
+  "SELECT CURRENT_USER()") if [ "\$u" = root ] && [ -f "$DB/socket-user" ]; then cat "$DB/socket-user"; else echo "\$u@localhost"; fi ;;
   "SELECT 1") echo 1 ;;
   "SELECT COUNT(*) FROM mysql.user"*) if [ -e "$DB/frame-line" ]; then echo "--------------" >&2; echo "ERROR 1227 (42000): Access denied; you need the CREATE USER privilege" >&2; exit 1; fi; [ -f "$DB/created-hash" ] && echo 1 || echo 0 ;;
   "SHOW DATABASES") printf '%s\n' information_schema mysql nextDB wordpress ;;
@@ -1479,7 +1479,7 @@ rs() { # rs <cgroup-datei>
     COCKPIT_BORG_ACTION_CGROUP_FILE="$DB/$1" -- db-access root-socket
 }
 rs_reset() { # wie nach bootstrap ohne unix_socket für root
-  rm -f "$DB/root-socket" "$DB/restart.log" "$DB"/init-* "$DB/root-cond.log" "$WORK/manager-env" "$WORK/unset-broken" "$WORK/units/mariadb.state"
+  rm -f "$DB/root-socket" "$DB/socket-user" "$DB/restart.log" "$DB"/init-* "$DB/root-cond.log" "$WORK/manager-env" "$WORK/unset-broken" "$WORK/units/mariadb.state"
   cp -a "$WORK/cnf-vor-rs" "$DB/mysqldump.cnf"
   printf '%% erfuellt\n' > "$DB/root-cond"
 }
@@ -1509,6 +1509,20 @@ assert_rc "fremdes MYSQLD_OPTS im Manager: abgewiesen" 67
 cmp -s "$DB/mysqldump.cnf" "$WORK/cnf-vor-rs" && ok "root-socket: Datei nie verändert" || bad "root-socket: Datei verändert"
 if grep -q '^cockpit_backup ' "$DB/root-cond.log" 2>/dev/null && ! grep -qv '^cockpit_backup ' "$DB/root-cond.log"; then ok "Bedingung gelesen mit dem Konto der Datei"; else bad "Bedingung nicht mit dem Konto der Datei gelesen"; fi
 assert_no_file "root-socket liest config.php nie" "$DB/runuser.log"
+
+echo "== db-access root-socket: Optionsdatei fehlt → Bedingung nicht lesbar, kein Neustart =="
+rs_reset; rm -f "$DB/mysqldump.cnf"
+rs cgroup-run
+assert_rc "root-socket ohne Optionsdatei" 67
+[ "$(restarts)" = 0 ] && ok "ohne Optionsdatei kein Neustart" || bad "ohne Optionsdatei: Neustart ($(restarts))"
+
+echo "== db-access root-socket: anonymer Nutzer meldet sich per Socket an → zählt nicht als root =="
+rs_reset; : > "$DB/root-socket"; printf '@localhost\n' > "$DB/socket-user"
+rs cgroup-run; rm -f "$DB/socket-user"
+assert_rc "anonymer Nutzer statt root" 1
+assert_no_out "kein 'schon eingerichtet' für einen anonymen Nutzer" "kein Neustart"
+assert_err "Nachprüfung verlangt root" "die Init-Datei hat nicht gewirkt"
+[ "$(restarts)" = 1 ] && ok "anonymer Nutzer: ein Neustart, dann laut" || bad "anonymer Nutzer: nicht genau ein Neustart ($(restarts))"
 
 echo "== db-access root-socket: Start mit der Init-Datei scheitert → normal neu gestartet =="
 rs_reset; : > "$DB/init-abort"

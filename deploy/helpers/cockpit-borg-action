@@ -1282,7 +1282,9 @@ db_root_socket() {
   db_lock
   if state="$(borgmatic_busy)"; then die "das Backup läuft gerade ($state) — nach dem Lauf erneut; nichts verändert." 3; fi
   systemctl is-active --quiet "$DB_UNIT" || die "$DB_UNIT läuft nicht — root-socket startet nur eine laufende Datenbank neu; nichts verändert." 67
-  if out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)"; then
+  # Nur root zählt: ein anonymer ''@localhost wäre genauer als root@% und meldete
+  # sich ebenfalls an (Zweitprüfung PR #117).
+  if out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)" && [ "${out%%@*}" = root ]; then
     section "root per Socket schon eingerichtet"
     printf 'root per socket: ok %s — kein Neustart\n' "$out"
     return 0
@@ -1300,7 +1302,7 @@ db_root_socket() {
   db_init_guard
   db_init_restart "$(db_init_root_sql)" || die "$DB_INIT_FAIL" 1
   section "root per Socket"
-  if ! out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)"; then
+  if ! out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)" || [ "${out%%@*}" != root ]; then
     die "die Init-Datei hat nicht gewirkt — root per socket: $(db_error "$out") (Datenbank: $(systemctl is-active "$DB_UNIT" 2>&1); root hat nichts verloren)." 1
   fi
   printf 'root@%s: unix_socket zusätzlich zum bisherigen Verfahren (Passwort über TCP wie bisher)\n' "$target"
