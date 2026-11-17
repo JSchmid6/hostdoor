@@ -1073,6 +1073,13 @@ case "\$q" in
   "SELECT 1") echo 1 ;;
   "SELECT COUNT(*) FROM mysql.user"*) if [ -e "$DB/frame-line" ]; then echo "--------------" >&2; echo "ERROR 1227 (42000): Access denied; you need the CREATE USER privilege" >&2; exit 1; fi; [ -f "$DB/created-hash" ] && echo 1 || echo 0 ;;
   "SHOW DATABASES") printf '%s\n' information_schema mysql nextDB wordpress ;;
+  "SELECT VERSION()") echo "10.11.14-MariaDB-0ubuntu0.24.04.1" ;;
+  "SELECT PLUGIN_STATUS FROM information_schema.PLUGINS"*) echo ACTIVE ;;
+  "SELECT CONCAT_WS"*"FROM mysql.global_priv WHERE User = 'root'"*)
+    # root-auth: nur cockpit_backup (SELECT auf *.*) und root lesen mysql.*
+    printf '%s\n' "\$u \$q" >> "$DB/root-auth.log"
+    [ "\$u" = nextDB ] && { echo "ERROR 1142 (42000): SELECT command denied to user 'nextDB'@'localhost' for table global_priv" >&2; exit 1; }
+    cat "$DB/root-priv" ;;
   *) echo "ERROR 1064: unerwartete Abfrage \$q" >&2; exit 1 ;;
 esac
 EOF
@@ -1451,6 +1458,49 @@ assert_no_file "config.php nicht gelesen (kein runuser)" "$DB/runuser.log"
 no_secret_out "Rotation ohne Passwort in der Ausgabe"
 db cgroup-run check
 assert_rc "check nach der Rotation" 0
+
+# --- db-access root-auth: lesender Befund zur Anmeldung von root (Karte t_f0718728)
+printf '%s\n' "root@localhost plugin=mysql_native_password hash=ja auth_or=0[] gesperrt=nein bootstrap-bedingung=erfuellt" \
+  "root@% plugin=mysql_native_password hash=ja auth_or=0[] gesperrt=nein" > "$DB/root-priv"
+echo "== db-access root-auth: über root per Socket =="
+rm -f "$DB/runuser.log" "$DB/root-auth.log"
+db cgroup-run root-auth
+assert_rc "root-auth" 0
+assert_out "gelesen als root per Socket" "gelesen als root-socket"
+assert_out "nennt root@localhost mit Plugin" "root@localhost plugin=mysql_native_password"
+assert_out "nennt die bootstrap-Bedingung" "bootstrap-bedingung=erfuellt"
+assert_out "nennt den Zustand des unix_socket-Plugins" "plugin unix_socket: ACTIVE"
+assert_no_file "config.php nicht gelesen (kein runuser, kein X1)" "$DB/runuser.log"
+# Jeder Bezug auf den Hash steht nur in einem Vergleich (= '' / = 'invalid' / <> '').
+if [ -s "$DB/root-auth.log" ] && ! grep -o "authentication_string')[^A-Za-z]\{0,10\}" "$DB/root-auth.log" | grep -vE "^authentication_string'\)(, ''\) (=|<>) | = )" | grep -q .; then
+  ok "root-auth nutzt authentication_string nur im Vergleich"
+else bad "root-auth gibt authentication_string womöglich aus"; fi
+# Priv nur über die erlaubten Pfade (Plugin, Vergleich auf den Hash, Sperre, Länge
+# von auth_or, deren Plugins) — nie Priv oder auth_or als Ganzes (Zweitprüfung #116).
+pz="$(grep -o 'Priv' "$DB/root-auth.log" 2>/dev/null | wc -l)"
+pe="$(grep -oE "(JSON_VALUE\(Priv, '\\\$\.(plugin|authentication_string|account_locked)'|JSON_LENGTH\(Priv, '\\\$\.auth_or'|JSON_EXTRACT\(Priv, '\\\$\.auth_or\[\*\]\.plugin')\)" "$DB/root-auth.log" 2>/dev/null | wc -l)"
+if [ "$pz" -gt 0 ] && [ "$pz" = "$pe" ]; then ok "root-auth liest Priv nur über erlaubte Pfade ($pe)"; else bad "root-auth liest Priv über einen anderen Pfad ($pe von $pz erlaubt)"; fi
+no_secret_out "root-auth ohne Passwort"
+echo "== db-access root-auth: ohne Socket über das Backup-Konto der Datei =="
+rm -f "$DB/root-socket" "$DB/root-auth.log"
+db cgroup-run root-auth
+assert_rc "root-auth über die Optionsdatei" 0
+assert_out "gelesen als cockpit_backup" "gelesen als cockpit_backup (Optionsdatei)"
+assert_out "root per Socket als Fehlerzeile" "root per socket: ERROR 1045"
+if grep -q '^cockpit_backup ' "$DB/root-auth.log" 2>/dev/null; then ok "Abfrage lief als cockpit_backup"; else bad "Abfrage lief nicht als cockpit_backup"; fi
+assert_no_file "config.php nicht gelesen" "$DB/runuser.log"
+no_secret_out "root-auth über die Datei ohne Passwort"
+echo "== db-access root-auth: Datei auf nextDB → global_priv nicht lesbar, rc=1, kein X1 =="
+cp -a "$DB/mysqldump.cnf" "$WORK/cnf-vor-rootauth"
+printf '[client]\nuser=nextDB\npassword="%s"\n' "$NCPASS" > "$DB/mysqldump.cnf"
+db cgroup-run root-auth
+assert_rc "root-auth ohne Leserecht auf mysql.*" 1
+assert_out "nennt die Fehlerzeile" "mysql.global_priv: ERROR 1142"
+assert_no_file "auch dann kein runuser" "$DB/runuser.log"
+no_secret_out "root-auth mit nextDB ohne Passwort"
+cp -a "$WORK/cnf-vor-rootauth" "$DB/mysqldump.cnf"; touch "$DB/root-socket"
+db cgroup-executor root-auth
+assert_rc "root-auth über den Executor abgewiesen" 64
 
 # --- sources: Backup-Quellen ergänzen (Karte t_2b394537) ---------------------
 # Hinzufügen frei, Schwächen beim Riegel: geprüft werden die Grammatik und die
