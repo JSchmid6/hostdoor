@@ -122,7 +122,7 @@ Bare-metal Ubuntu VPS running:
   `root@localhost`, only `root@%` (one native method); the init file looked only at `root@localhost`. Fix: target
   `root@localhost`, else `root@%`, applied by `db-access root-socket` (one restart with only root's statements). **Done 17.11.2026** (host-run bc386207):
   `root per socket: ok root@%`, root@% keeps its password method (`auth_or=2["unix_socket"]`), `debian-start` runs again; `ensure`/`restore`
-  now use root via the socket and no longer read `config.php`. `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth|root-socket`
+  are expected to use root via the socket and no longer read `config.php` (not yet exercised). `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth|root-socket`
   (`root-auth`: read-only, names per `root@<host>` only the auth plugins and whether the bootstrap condition holds at the target entry, never a hash; `root-socket`: only root gets unix_socket, one restart with `--init-file`, refuses without restart when the condition does not hold; card t_f0718728)
   runs only inside a host-run unit (cgroup check), never through the executor; `bootstrap` is not part of
   the `backup-repair` exception (it needs the normal return path). `repair` always needs the operator's approval:

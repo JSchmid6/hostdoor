@@ -372,7 +372,7 @@ Grenzen:
   `root per socket: ok root@%`, `root@% plugin=mysql_native_password hash=ja auth_or=2["unix_socket"]` (das
   Passwort-Verfahren mit seinem Hash bleibt), `mariadb.service` active. `/etc/mysql/debian-start` lief beim
   Start ohne 1045 durch („Upgrading MariaDB tables if necessary“, „Checking for insecure root accounts“).
-  Nextcloud `status.php` danach normal. Damit nimmt `db_admin` root per Socket: `ensure`/`restore` brauchen
+  Nextcloud `status.php` danach normal (installed, maintenance false, needsDbUpgrade false; geprüft 17.11. 12:4x). Damit nimmt `db_admin` root per Socket: `ensure`/`restore` brauchen
   `config.php` nicht mehr (kein X1). Erwartet, in diesem Lauf nicht ausgeführt.
   Rückweg für root: `ALTER USER root@'%' IDENTIFIED VIA mysql_native_password USING '<Hash>'` per Socket.
 * Ohne Rückweg darf genau dieser Lauf trotzdem starten (Ausnahme `backup-repair`,
