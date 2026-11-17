@@ -1087,8 +1087,8 @@ db_root_socket_state() { local out; if out="$(root_mysql -e 'SELECT CURRENT_USER
 # root@<host> aus mysql.global_priv nur Plugin, ob ein Hash da ist (hash/invalid/
 # leer), die Plugins aus auth_or, ob gesperrt, und ob die bootstrap-Bedingung
 # greift. Nie authentication_string selbst: die Abfrage wählt ihn nur als Vergleich.
-# Gelesen mit root per Socket, sonst mit dem Konto der Optionsdatei (cockpit_backup
-# hat SELECT auf *.*, darin mysql.*) — nie mit dem Nextcloud-Konto (kein X1).
+# Gelesen mit root per Socket, sonst mit dem Konto, das die Optionsdatei trägt
+# (cockpit_backup hat SELECT auf *.*, darin mysql.*); config.php nie (kein X1).
 db_root_auth() {
   have mysql || die "mysql fehlt." 67
   local via="root-socket" q out

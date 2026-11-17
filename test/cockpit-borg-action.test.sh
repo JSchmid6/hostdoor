@@ -1475,6 +1475,11 @@ assert_no_file "config.php nicht gelesen (kein runuser, kein X1)" "$DB/runuser.l
 if [ -s "$DB/root-auth.log" ] && ! grep -o "authentication_string')[^A-Za-z]\{0,10\}" "$DB/root-auth.log" | grep -vE "^authentication_string'\)(, ''\) (=|<>) | = )" | grep -q .; then
   ok "root-auth nutzt authentication_string nur im Vergleich"
 else bad "root-auth gibt authentication_string womöglich aus"; fi
+# Priv nur über die erlaubten Pfade (Plugin, Vergleich auf den Hash, Sperre, Länge
+# von auth_or, deren Plugins) — nie Priv oder auth_or als Ganzes (Zweitprüfung #116).
+pz="$(grep -o 'Priv' "$DB/root-auth.log" 2>/dev/null | wc -l)"
+pe="$(grep -oE "(JSON_VALUE\(Priv, '\\\$\.(plugin|authentication_string|account_locked)'|JSON_LENGTH\(Priv, '\\\$\.auth_or'|JSON_EXTRACT\(Priv, '\\\$\.auth_or\[\*\]\.plugin')\)" "$DB/root-auth.log" 2>/dev/null | wc -l)"
+if [ "$pz" -gt 0 ] && [ "$pz" = "$pe" ]; then ok "root-auth liest Priv nur über erlaubte Pfade ($pe)"; else bad "root-auth liest Priv über einen anderen Pfad ($pe von $pz erlaubt)"; fi
 no_secret_out "root-auth ohne Passwort"
 echo "== db-access root-auth: ohne Socket über das Backup-Konto der Datei =="
 rm -f "$DB/root-socket" "$DB/root-auth.log"
