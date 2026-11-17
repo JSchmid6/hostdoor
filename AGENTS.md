@@ -113,13 +113,15 @@ Bare-metal Ubuntu VPS running:
   Interim path B (`db-access adopt`, the Nextcloud account `nextDB`, only the database `nextcloud`) is the
   way back via `db-access restore` (`mysqldump.cnf.vor-20261115T084434Z`). Path A was `db-access bootstrap`: ONE restart of `mariadb.service` with `--init-file` (via `systemctl set-environment
   MYSQLD_OPTS`, file root:mysql 0640 under `/run`, deleted and unset right after the start, only the hash
-  inside) creates the account and gives `root@localhost` unix_socket in addition to its old method (OR; untouched unless root has exactly one native/ed25519 method).
+  inside) creates the account and gives root (`root@localhost` if it exists, else `root@%`) unix_socket in addition to its old method (OR; untouched unless root has exactly one native/ed25519 method).
   It costs a short database outage (Nextcloud, WordPress) — announce the time. After it, `ensure`/`restore`
   were meant to use root via the socket. **Open (15.11.2026):** on this host root did NOT get unix_socket
   (`root per socket: ERROR 1045` after the run; presumably root's entry did not match the one-method
   condition, so the init file ran `DO 0`, unverified), so `ensure`/`restore` still need the Nextcloud
-  account (X1 in the intent) until that is fixed. `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth`
-  (`root-auth`: read-only, names per `root@<host>` only the auth plugins and whether the bootstrap condition holds, never a hash; card t_f0718728)
+  account (X1 in the intent) until that is fixed. **Cause (17.11.2026, host-run bb97f8c3, `root-auth`):** there is no
+  `root@localhost`, only `root@%` (one native method); the init file looked only at `root@localhost`. Fix: target
+  `root@localhost`, else `root@%`, applied by `db-access root-socket` (one restart with only root's statements). `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth|root-socket`
+  (`root-auth`: read-only, names per `root@<host>` only the auth plugins and whether the bootstrap condition holds at the target entry, never a hash; `root-socket`: only root gets unix_socket, one restart with `--init-file`, refuses without restart when the condition does not hold; card t_f0718728)
   runs only inside a host-run unit (cgroup check), never through the executor; `bootstrap` is not part of
   the `backup-repair` exception (it needs the normal return path). `repair` always needs the operator's approval:
   the plan policy stops any plan that names it — a capability manifest or another

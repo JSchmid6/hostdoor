@@ -241,11 +241,12 @@ Punkt root per Socket: unten „Weg A — Ausrollung 15.11.2026“.
 | Form | Wirkung |
 | --- | --- |
 | `cockpit-borg-action db-access status` | lesend: Besitz/Modus der Datei, Konto (`user=`-Zeile), ob die Anmeldung geht (Fehlerzeile der Datenbank), Zahl der Sicherungen. Kein Wert. |
-| `cockpit-borg-action db-access root-auth` | lesend (Karte t_f0718728): wie root sich an der Datenbank anmeldet. `root per socket` (ok oder Fehlerzeile), Server-Version, `mysql_upgrade_info`, Zustand des Plugins `unix_socket`, dann je `root@<host>` aus `mysql.global_priv`: `plugin=`, `hash=ja\|invalid\|leer`, `auth_or=<Zahl der Einträge>[<deren Plugins>]`, `gesperrt=`, bei `localhost` `bootstrap-bedingung=erfuellt\|nicht-erfuellt` (dieselbe Bedingung wie in der Init-Datei, eine Stelle im Helfer). Gelesen mit root per Socket, sonst mit dem Konto, das die Optionsdatei gerade trägt (`cockpit_backup` hat `SELECT` auf `*.*`, also auch `mysql.*`; steht dort nach einem `restore` wieder `nextDB`, meldet sich der Modus damit an und bekommt rc=1). `config.php` liest er nie, und kein Wert verlässt die Datei (kein X1). `authentication_string` steht in der Abfrage nur in Vergleichen, nie als Spalte (Offline-Prüfung mit Mutation; Werkstatt-Probe gegen MariaDB 10.11.19, fünf Formen von root, kein Hash in der Ausgabe). rc=1, wenn `mysql.global_priv` nicht lesbar ist. |
+| `cockpit-borg-action db-access root-auth` | lesend (Karte t_f0718728): wie root sich an der Datenbank anmeldet. `root per socket` (ok oder Fehlerzeile), Server-Version, `mysql_upgrade_info`, Zustand des Plugins `unix_socket`, dann je `root@<host>` aus `mysql.global_priv`: `plugin=`, `hash=ja\|invalid\|leer`, `auth_or=<Zahl der Einträge>[<deren Plugins>]`, `gesperrt=`, am Ziel-Eintrag (`root@localhost`, wenn es ihn gibt, sonst `root@%`) `bootstrap-bedingung=erfuellt\|nicht-erfuellt` (dieselbe Bedingung und dasselbe Ziel wie in der Init-Datei, eine Stelle im Helfer). Gelesen mit root per Socket, sonst mit dem Konto, das die Optionsdatei gerade trägt (`cockpit_backup` hat `SELECT` auf `*.*`, also auch `mysql.*`; steht dort nach einem `restore` wieder `nextDB`, meldet sich der Modus damit an und bekommt rc=1). `config.php` liest er nie, und kein Wert verlässt die Datei (kein X1). `authentication_string` steht in der Abfrage nur in Vergleichen, nie als Spalte (Offline-Prüfung mit Mutation; Werkstatt-Probe gegen MariaDB 10.11.19, fünf Formen von root, kein Hash in der Ausgabe). rc=1, wenn `mysql.global_priv` nicht lesbar ist. |
 | `cockpit-borg-action db-access check` | rc=0, wenn das Konto der Datei sich anmeldet und `mysqldump --all-databases --no-data` durchläuft (wie der Hook, nur das Schema) |
 | `cockpit-borg-action db-access ensure` | legt `cockpit_backup@localhost` an (oder setzt ihm ein neues Passwort), entzieht alles und gibt genau `SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, SHOW DATABASES` auf `*.*` (der Hook dumpt alle Datenbanken, ohne `--events`, darum kein EVENT), prüft das neue Konto mit einer Arbeitsdatei, sichert die alte Datei als `mysqldump.cnf.vor-<UTC-Zeit>` (0600) und tauscht dann (0600 root). Übrige Zeilen der alten Datei außer `user`/`password` bleiben. |
 | `cockpit-borg-action db-access adopt` | **Zwischenweg B** (Jochen 28.10.2026): schreibt das aktuelle Nextcloud-DB-Konto aus `config.php` (gelesen als `www-data`, wie bei `ensure`) in die Datei; an der Datenbank ändert sich nichts. Prüft die neue Anmeldung und den Schema-Dump mit einer Arbeitsdatei, sichert die alte Datei als `.vor-<UTC-Zeit>` und tauscht (0600 root). Für den Fall, dass `ensure` kein Konto anlegen kann (siehe unten). |
-| `cockpit-borg-action db-access bootstrap` | **Weg A** (Jochen 28.10.2026): startet `mariadb.service` **einmal** mit `--init-file` neu (siehe „Weg A“ unten): die Datei legt `cockpit_backup@localhost` mit dem Hash und den Rechten von `ensure` an und gibt `root@localhost` zusätzlich `unix_socket` (das bisherige Verfahren von root bleibt als Alternative). Danach prüft es das neue Konto mit einer Arbeitsdatei, sichert die alte Datei als `.vor-<UTC-Zeit>` und tauscht (0600 root). Ist die Datei schon auf `cockpit_backup` und gültig: nichts verändert, kein Neustart. Kurzer DB-Ausfall (Nextcloud, WordPress). |
+| `cockpit-borg-action db-access bootstrap` | **Weg A** (Jochen 28.10.2026): startet `mariadb.service` **einmal** mit `--init-file` neu (siehe „Weg A“ unten): die Datei legt `cockpit_backup@localhost` mit dem Hash und den Rechten von `ensure` an und gibt root zusätzlich `unix_socket` (`root@localhost`, sonst `root@%`; das bisherige Verfahren von root bleibt als Alternative). Danach prüft es das neue Konto mit einer Arbeitsdatei, sichert die alte Datei als `.vor-<UTC-Zeit>` und tauscht (0600 root). Ist die Datei schon auf `cockpit_backup` und gültig: nichts verändert, kein Neustart. Kurzer DB-Ausfall (Nextcloud, WordPress). |
+| `cockpit-borg-action db-access root-socket` | **nur root** (Karte t_f0718728), für den Stand nach `bootstrap` (Datei schon auf `cockpit_backup`, `bootstrap` startet nicht mehr neu): startet `mariadb.service` **einmal** mit `--init-file` neu; die Datei enthält nur die root-Sätze von `bootstrap` (kein Konto, kein Hash, keine Rechte). Vorher liest es mit dem Konto der Optionsdatei, ob die Bedingung am Ziel-Eintrag greift — sonst kein Neustart (rc=67). Geht root per Socket schon: nichts verändert, kein Neustart. Danach prüft es `root per socket` (rc=1, wenn die Datei nicht gewirkt hat; die Datenbank läuft, root hat nichts verloren). Gleiche Riegel wie `bootstrap` (Backup läuft rc=3, fremdes `MYSQLD_OPTS` rc=67, Rückweg-Neustart ohne Datei). Kurzer DB-Ausfall. |
 | `cockpit-borg-action db-access restore` | spielt die jüngste `.vor-`Datei zurück. Gehört sie schon dem Backup-Konto (Stand vor einer Rotation), setzt `restore` das Konto zuerst auf ihren Hash — dafür braucht es wieder die Verwaltungs-Anmeldung (unten, X1). Gehört sie dem alten Nextcloud-Konto (Stand vor dem ersten `ensure`), bleibt `cockpit_backup` bestehen, ohne Wirkung. |
 
 Grenzen:
@@ -311,8 +312,12 @@ Grenzen:
     Fehler aus und startet. Maßgeblich ist deshalb allein die Prüfung des neuen Kontos danach.
   * **Ein Neustart reicht:** `init_file` wird nur beim Start gelesen; `@@init_file` zeigt bis zum
     nächsten Start auf die gelöschte Datei, ohne Wirkung. (Der Auftrag rechnete mit zweien.)
-  * **root:** `ALTER USER root@localhost IDENTIFIED VIA unix_socket OR <bisheriges Verfahren> USING
-    <bisheriger Hash>` (vorbereitete Anweisung in der Datei, gelesen aus `mysql.global_priv`) — nur,
+  * **root:** `ALTER USER root@<Ziel> IDENTIFIED VIA unix_socket OR <bisheriges Verfahren> USING
+    <bisheriger Hash>` (vorbereitete Anweisung in der Datei, gelesen aus `mysql.global_priv`). Ziel ist
+    `root@localhost`, wenn es ihn gibt, sonst `root@%` (MariaDB nimmt für den Socket den genauesten Host;
+    seit 17.11.2026, Karte t_f0718728 — vorher nur `localhost`, siehe Ausrollung). `unix_socket` wirkt nur
+    über den Socket; über TCP bleibt `root@%` beim Passwort (Werkstatt-Probe 17.11.2026: ohne Passwort
+    1698). Nur,
     wenn root genau ein Verfahren hat (`auth_or` fehlt oder ist `[{}]`; so speichert MariaDB auch
     ein einzelnes `IDENTIFIED VIA … USING`) und es `mysql_native_password`/`ed25519` mit Hash ist.
     Sonst (anderes Plugin, schon Alternativen, root fehlt) `DO 0`: root verliert nie etwas, und die
@@ -332,7 +337,7 @@ Grenzen:
     Fall, dass `unset-environment` nicht greift (dann rc=1 mit dem Handgriff). Ein fehlendes
     optionales `EnvironmentFile=-…` (`ignore_errors=yes`) hält nicht an.
   * **Rückweg:** `db-access restore` (Datei auf `nextDB`, Stand Zwischenweg B). root zurück auf nur
-    Passwort: `ALTER USER root@localhost IDENTIFIED VIA mysql_native_password USING '<Hash aus SHOW
+    Passwort: `ALTER USER root@<Ziel> IDENTIFIED VIA mysql_native_password USING '<Hash aus SHOW
     CREATE USER>'` per `mysql -u root` (Socket); `cockpit_backup` stört ohne Datei nicht.
   * Danach nimmt die Verwaltungs-Anmeldung zuerst root per Socket — `ensure` (Rotation) und
     `restore` lesen `config.php` dann nicht mehr (kein X1 mehr).
@@ -349,9 +354,14 @@ Grenzen:
   auf der Platte. Dass `wordpress` im Dump steht, ist damit über die Größe belegt, nicht über den
   Inhalt (kein Extract). `db-access status`: Konto `cockpit_backup`, Anmeldung ok.
   **Offen:** root hat **kein** `unix_socket` bekommen (`root per socket: ERROR 1045`, Status des Laufs
-  `failed_verification` allein deshalb). Vermutung, ungeprüft: der Eintrag von root in
-  `mysql.global_priv` erfüllt die Ein-Verfahren-Bedingung nicht, die Datei lief mit `DO 0` — root hat
-  nichts verloren. Folge: `ensure`/`restore` brauchen weiter das Nextcloud-Konto (X1 im Intent). Eine
+  `failed_verification` allein deshalb). **Ursache belegt (17.11.2026, Host-Run bb97f8c3, `db-access
+  root-auth`):** es gibt **kein** `root@localhost`, nur `root@% plugin=mysql_native_password hash=ja
+  auth_or=0[]`; die Init-Datei suchte nur `root@localhost`, fand keine Zeile und lief mit `DO 0` — root hat
+  nichts verloren. Der Socket trifft `root@%` (Passwort) → 1045, ebenso `/etc/mysql/debian-start`.
+  Widerlegt: anderes Plugin oder schon `auth_or` (root@% hat ein natives Verfahren), Plugin `unix_socket`
+  nicht geladen (`ACTIVE`), Systemtabellen alt (`mysql_upgrade_info` 10.11.14 = Server 10.11.14).
+  Behebung: Ziel `root@localhost`, sonst `root@%`, und das Verb `db-access root-socket` (nur die root-Sätze,
+  ein Neustart). Folge: `ensure`/`restore` brauchen weiter das Nextcloud-Konto (X1 im Intent). Eine
   direkte SQL-Abfrage mit dem Backup-Konto zur Diagnose hat der Türsteher zu Recht abgewiesen (Job
   17619aa6, X1); der Weg ist der lesende Modus `db-access root-auth` (Karte t_f0718728), der nur die
   Auth-Plugins von root nennt.
