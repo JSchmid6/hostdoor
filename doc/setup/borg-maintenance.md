@@ -365,6 +365,16 @@ Grenzen:
   direkte SQL-Abfrage mit dem Backup-Konto zur Diagnose hat der Türsteher zu Recht abgewiesen (Job
   17619aa6, X1); der Weg ist der lesende Modus `db-access root-auth` (Karte t_f0718728), der nur die
   Auth-Plugins von root nennt.
+* **root per Socket — Ausrollung 17.11.2026 (Karte t_f0718728):** PR #116 (`root-auth`, Merge 4aae602,
+  self.update 51d4ab47), Leselauf bb97f8c3 (Ursache oben), PR #117 (`root-socket`, Merge efe907d, Zweitprüfung
+  FREIGABE in zwei Runden, self.update 5a9f5c3a), Host-Run bc386207 (Snapshot snap1794914367, Backup 11,4 h alt):
+  Neustart mit `--init-file` rc=0 nach 1 s, Datei gelöscht, `MYSQLD_OPTS` zurückgenommen. Danach
+  `root per socket: ok root@%`, `root@% plugin=mysql_native_password hash=ja auth_or=2["unix_socket"]` (das
+  Passwort-Verfahren mit seinem Hash bleibt), `mariadb.service` active. `/etc/mysql/debian-start` lief beim
+  Start ohne 1045 durch („Upgrading MariaDB tables if necessary“, „Checking for insecure root accounts“).
+  Nextcloud `status.php` danach normal. Damit nimmt `db_admin` root per Socket: `ensure`/`restore` brauchen
+  `config.php` nicht mehr (kein X1). Erwartet, in diesem Lauf nicht ausgeführt.
+  Rückweg für root: `ALTER USER root@'%' IDENTIFIED VIA mysql_native_password USING '<Hash>'` per Socket.
 * Ohne Rückweg darf genau dieser Lauf trotzdem starten (Ausnahme `backup-repair`,
   `doc/setup/host-run.md`): `db-access ensure` (oder `adopt`), danach `systemctl start borgmatic.service`,
   Prüfungen `db-access check` und `! systemctl is-failed --quiet borgmatic.service`, Rückweg
