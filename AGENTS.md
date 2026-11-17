@@ -118,7 +118,8 @@ Bare-metal Ubuntu VPS running:
   were meant to use root via the socket. **Open (15.11.2026):** on this host root did NOT get unix_socket
   (`root per socket: ERROR 1045` after the run; presumably root's entry did not match the one-method
   condition, so the init file ran `DO 0`, unverified), so `ensure`/`restore` still need the Nextcloud
-  account (X1 in the intent) until that is fixed. `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap`
+  account (X1 in the intent) until that is fixed. `cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth`
+  (`root-auth`: read-only, names per `root@<host>` only the auth plugins and whether the bootstrap condition holds, never a hash; card t_f0718728)
   runs only inside a host-run unit (cgroup check), never through the executor; `bootstrap` is not part of
   the `backup-repair` exception (it needs the normal return path). `repair` always needs the operator's approval:
   the plan policy stops any plan that names it — a capability manifest or another

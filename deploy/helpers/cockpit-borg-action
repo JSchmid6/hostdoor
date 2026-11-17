@@ -6,7 +6,7 @@
 #   cockpit-borg-action status     lesend: Zustand des Backups, beider Seiten
 #   cockpit-borg-action check      startet einen Repo-Check (lesend, mit --force)
 #   cockpit-borg-action repair     startet check --repair --force
-#   cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap
+#   cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth
 #                                  DB-Zugang des Backups (mysqldump-Hook): nur aus
 #                                  einem Lauf der allgemeinen Tür (cockpit-host-run,
 #                                  geprüft an der cgroup), nie über sudo/Executor —
@@ -138,8 +138,10 @@ readonly BORG_ACTION_DB_GRANTS="SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, SHOW DA
 readonly DB_UNIT_FIXED="mariadb.service"
 readonly DB_INIT_GROUP_FIXED="mysql"
 readonly DB_INIT_BASE_FIXED="/run"
+# Version der Systemtabellen (mariadb-upgrade schreibt sie), nur für root-auth.
+readonly DB_UPGRADE_INFO_FIXED="/var/lib/mysql/mysql_upgrade_info"
 readonly HOST_RUN_CGROUP_RE='/cockpit-host-run-[A-Za-z0-9][A-Za-z0-9_.-]*\.service$'
-DB_CNF=""; DB_USER=""; NC_CONFIG=""; DB_UNIT=""; DB_INIT_GROUP=""; DB_INIT_BASE=""
+DB_CNF=""; DB_USER=""; NC_CONFIG=""; DB_UNIT=""; DB_INIT_GROUP=""; DB_INIT_BASE=""; DB_UPGRADE_INFO=""
 
 # Die Unit startet diesen Helfer erneut (`--payload <verb>`). Der Pfad muss dafür
 # absolut sein — systemd startet die Unit mit Arbeitsverzeichnis /.
@@ -162,7 +164,7 @@ cockpit-borg-action — Borg-Betrieb auf diesem Host.
            Freigabe des Operators in der Plan-Policy der Cockpit-API. Gleiche
            Frist- und Sperrprüfung wie check.
 
-  db-access status|check|ensure|adopt|restore|bootstrap
+  db-access status|check|ensure|adopt|restore|bootstrap|root-auth
            DB-Zugang des Backups (die Optionsdatei des mysqldump-Hooks). Nur
            aus einem Lauf der allgemeinen Tür (cockpit-host-run), nie über den
            Executor. status: Konto und Anmeldung (ohne Werte); check: rc=0, wenn
@@ -174,7 +176,10 @@ cockpit-borg-action — Borg-Betrieb auf diesem Host.
            restore: die jüngste .vor-Datei zurück; bootstrap (Weg A, wenn
            kein Konto Konten anlegen darf): Datenbank EINMAL mit --init-file
            neu starten — legt das eigene Konto an, gibt root zusätzlich
-           unix_socket, tauscht die Datei wie ensure (kurzer DB-Ausfall).
+           unix_socket, tauscht die Datei wie ensure (kurzer DB-Ausfall);
+           root-auth (lesend): wie root sich anmeldet — je root@<host>
+           Plugin, Plugins aus auth_or, ob die bootstrap-Bedingung greift,
+           nie ein Hash.
 
   sources status|add <pfad>|add-large <pfad>|connect|disconnect|restore
            Zusätzliche Backup-Quellen (Musterdatei mit R-Zeilen, kein
@@ -789,6 +794,7 @@ readonly BORG_ACTION_INSTALLED="/usr/local/sbin/cockpit-borg-action"
 db_access_context() {
   DB_CNF="$DB_CNF_FIXED"; DB_USER="$DB_USER_FIXED"; NC_CONFIG="$NC_CONFIG_FIXED"
   DB_UNIT="$DB_UNIT_FIXED"; DB_INIT_GROUP="$DB_INIT_GROUP_FIXED"; DB_INIT_BASE="$DB_INIT_BASE_FIXED"
+  DB_UPGRADE_INFO="$DB_UPGRADE_INFO_FIXED"
   if [ "$BORG_ACTION_SELF" = "$BORG_ACTION_INSTALLED" ]; then
     grep -qE "$HOST_RUN_CGROUP_RE" /proc/self/cgroup 2>/dev/null
     return
@@ -798,6 +804,7 @@ db_access_context() {
   NC_CONFIG="${COCKPIT_BORG_ACTION_NC_CONFIG:-$NC_CONFIG_FIXED}"
   DB_INIT_GROUP="${COCKPIT_BORG_ACTION_DB_INIT_GROUP:-$DB_INIT_GROUP_FIXED}"
   DB_INIT_BASE="${COCKPIT_BORG_ACTION_DB_INIT_BASE:-$DB_INIT_BASE_FIXED}"
+  DB_UPGRADE_INFO="${COCKPIT_BORG_ACTION_DB_UPGRADE_INFO:-$DB_UPGRADE_INFO_FIXED}"
 }
 
 db_cnf_user() { # nur die user-Zeile, nie die Datei
@@ -1050,6 +1057,9 @@ db_restore() {
 # scheitern (Werkstatt-Probe 13.11.2026, MariaDB 10.11.14 wie der Host). Ein
 # SQL-Fehler darin hält den Start nicht auf, mariadbd bricht nur die Datei ab —
 # darum zählt am Ende allein, ob das neue Konto sich anmeldet und alles liest.
+# Bedingung, unter der bootstrap root@localhost zusätzlich unix_socket gibt (eine
+# Stelle für db_init_sql und den lesenden Befund db_root_auth).
+readonly DB_ROOT_SOCKET_COND="JSON_VALUE(Priv, '\$.plugin') IN ('mysql_native_password', 'ed25519') AND IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') <> '' AND IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1"
 db_init_sql() { # db_init_sql <hash>
   local u="$DB_USER"
   printf "CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY PASSWORD '%s';\n" "$u" "$1"
@@ -1063,7 +1073,7 @@ db_init_sql() { # db_init_sql <hash>
   # verliert nie etwas. Gelesen aus mysql.global_priv, weil die Sicht mysql.user nur
   # das erste Verfahren zeigt (Werkstatt-Probe 13.11.2026, alle vier Fälle).
   printf '%s\n' \
-    "SET @cockpit_root = (SELECT IF(JSON_VALUE(Priv, '\$.plugin') IN ('mysql_native_password', 'ed25519') AND IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') <> '' AND IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1, CONCAT('ALTER USER ''root''@''localhost'' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))), 'DO 0') FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost');" \
+    "SET @cockpit_root = (SELECT IF($DB_ROOT_SOCKET_COND, CONCAT('ALTER USER ''root''@''localhost'' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))), 'DO 0') FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost');" \
     "SET @cockpit_root = IFNULL(@cockpit_root, 'DO 0');" \
     "PREPARE cockpit_root_stmt FROM @cockpit_root;" \
     "EXECUTE cockpit_root_stmt;" \
@@ -1072,6 +1082,36 @@ db_init_sql() { # db_init_sql <hash>
 }
 
 db_root_socket_state() { local out; if out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)"; then printf 'ok %s\n' "$out"; else db_error "$out"; fi; }
+
+# root-auth (lesend, Karte t_f0718728): wie meldet sich root an — für jeden Eintrag
+# root@<host> aus mysql.global_priv nur Plugin, ob ein Hash da ist (hash/invalid/
+# leer), die Plugins aus auth_or, ob gesperrt, und ob die bootstrap-Bedingung
+# greift. Nie authentication_string selbst: die Abfrage wählt ihn nur als Vergleich.
+# Gelesen mit root per Socket, sonst mit dem Konto der Optionsdatei (cockpit_backup
+# hat SELECT auf *.*, darin mysql.*) — nie mit dem Nextcloud-Konto (kein X1).
+db_root_auth() {
+  have mysql || die "mysql fehlt." 67
+  local via="root-socket" q out
+  if ! root_mysql -e 'SELECT 1' >/dev/null 2>&1; then
+    via="$(db_cnf_user "$DB_CNF") (Optionsdatei)"
+    [ -f "$DB_CNF" ] || die "root per Socket geht nicht und $DB_CNF fehlt — nichts lesbar." 1
+  fi
+  rq() { if [ "$via" = root-socket ]; then root_mysql -e "$1" 2>&1; else mysql --defaults-extra-file="$DB_CNF" -N -B -e "$1" 2>&1; fi; }
+  section "Anmeldung von root an der Datenbank (gelesen als $via)"
+  printf 'root per socket: %s\n' "$(db_root_socket_state)"
+  printf 'version: %s\n' "$(rq 'SELECT VERSION()' | head -n 1)"
+  printf 'mysql_upgrade_info: %s\n' "$( { head -c 80 "$DB_UPGRADE_INFO" 2>/dev/null || printf 'fehlt'; } | tr -cd '[:alnum:]._-')"
+  out="$(rq "SELECT PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'unix_socket'")" || out="$(db_error "$out")"
+  printf 'plugin unix_socket: %s\n' "${out:-nicht geladen}"
+  q="SELECT CONCAT_WS(' ', CONCAT(User, '@', Host), CONCAT('plugin=', IFNULL(JSON_VALUE(Priv, '\$.plugin'), '-')), CONCAT('hash=', CASE WHEN IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') = '' THEN 'leer' WHEN JSON_VALUE(Priv, '\$.authentication_string') = 'invalid' THEN 'invalid' ELSE 'ja' END), CONCAT('auth_or=', IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0), IFNULL(JSON_EXTRACT(Priv, '\$.auth_or[*].plugin'), '[]')), CONCAT('gesperrt=', IF(IFNULL(JSON_VALUE(Priv, '\$.account_locked'), 'false') IN ('true', '1'), 'ja', 'nein')), IF(Host = 'localhost', CONCAT('bootstrap-bedingung=', IF(IFNULL($DB_ROOT_SOCKET_COND, 0), 'erfuellt', 'nicht-erfuellt')), NULL)) FROM mysql.global_priv WHERE User = 'root' ORDER BY Host"
+  if ! out="$(rq "$q")"; then
+    printf 'mysql.global_priv: %s\n' "$(db_error "$out")"
+    return 1
+  fi
+  # Nur Namen, Plugins, Zahlen und die festen Wörter oben; begrenzt.
+  printf '%s\n' "${out:-kein Eintrag root@…}" | head -n 20 | tr -cd '[:alnum:]_@%.:,=\[\]" \n-'
+  return 0
+}
 
 DB_INIT_DIR=""; DB_INIT_OPTS_SET=""
 db_manager_has_opts() { local e; e="$(systemctl show-environment 2>/dev/null || true)"; grep -q '^MYSQLD_OPTS=' <<<"$e"; }
@@ -1558,6 +1598,7 @@ case "$1" in
       adopt) db_adopt ;;
       restore) db_restore ;;
       bootstrap) db_bootstrap ;;
+      root-auth) db_root_auth ;;
       *) usage >&2; die "unbekanntes db-access-Verb: $2" 64 ;;
     esac
     ;;
