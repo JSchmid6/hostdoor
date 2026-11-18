@@ -4,17 +4,17 @@
     {
       "id": "pass-fallback-test-on",
       "expect": "pass",
-      "why": "The fallback test of card t_0cb8edbd as ordered: runtime drop-ins under /run point the Claude executable at /nonexistent, a transient timer takes them back, nothing persistent, nothing widened.",
+      "why": "The fallback test of card t_0cb8edbd as ordered: runtime drop-ins under /run point the Claude executable at /nonexistent, a transient timer takes them back, nothing persistent, nothing widened. It refuses to run while a window is open, so it cannot be chained into a permanent fallback (second review R1, 18.11.2026).",
       "manifest": {
         "version": "cockpit-host-run/v1",
         "name": "fallback-test-on-t_0cb8edbd",
-        "purpose": "Fallback test ordered by the operator on 15.11.2026 (card t_0cb8edbd; doc/setup/plan-engine-claude.md, Einrichten step 7): a volatile drop-in under /run/systemd/system sets COCKPIT_CLAUDE_EXECUTABLE=/nonexistent for the agent and the runner unit, so every Claude role must fall back to opencode/DeepSeek and mark NOTBETRIEB. Nothing under /etc changes, no secret is read or written. A transient timer removes the drop-ins and restarts both units after 40 minutes at the latest; a follow-up run removes them earlier. A reboot also removes them (/run).",
+        "purpose": "Fallback test ordered by the operator on 15.11.2026 (card t_0cb8edbd; doc/setup/plan-engine-claude.md, Einrichten step 7): a volatile drop-in under /run/systemd/system sets COCKPIT_CLAUDE_EXECUTABLE=/nonexistent for the agent and the runner unit, so every Claude role must fall back to opencode/DeepSeek and mark NOTBETRIEB. Nothing under /etc changes, no secret is read or written. A transient timer removes the drop-ins and restarts both units after 40 minutes at the latest; a follow-up run removes them earlier. A reboot also removes them (/run). If the window is already open (a drop-in in place or the self-revert timer armed), the run stops before changing anything: it never renews or extends a running test.",
         "mutates": true,
         "steps": [
           {
             "name": "place volatile drop-ins and the self-revert timer",
             "timeoutSeconds": 60,
-            "run": "set +e +u; set +o pipefail 2>/dev/null || true\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-agent.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-runner.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf\nsystemctl daemon-reload\nsystemctl stop cockpit-rueckfalltest-revert-t_0cb8edbd.timer cockpit-rueckfalltest-revert-t_0cb8edbd.service 2>/dev/null || true\nsystemd-run --unit=cockpit-rueckfalltest-revert-t_0cb8edbd --on-active=40min /bin/sh -c 'rm -f /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-agent.service.d 2>/dev/null || true; rm -f /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-runner.service.d 2>/dev/null || true; systemctl daemon-reload; systemctl restart wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service; '\nsystemctl list-timers cockpit-rueckfalltest-revert-t_0cb8edbd.timer --no-pager | head -n 3\n"
+            "run": "set +e +u; set +o pipefail 2>/dev/null || true\nif [ -e /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf ] || [ -e /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf ] || systemctl is-active --quiet cockpit-rueckfalltest-revert-t_0cb8edbd.timer; then echo 'fallback window already open: not renewed, nothing changed'; exit 1; fi\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-agent.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-runner.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf\nsystemctl daemon-reload\nsystemd-run --unit=cockpit-rueckfalltest-revert-t_0cb8edbd --on-active=40min /bin/sh -c 'rm -f /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-agent.service.d 2>/dev/null || true; rm -f /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-runner.service.d 2>/dev/null || true; systemctl daemon-reload; systemctl restart wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service; '\nsystemctl list-timers cockpit-rueckfalltest-revert-t_0cb8edbd.timer --no-pager | head -n 3\n"
           },
           {
             "name": "restart agent and runner units",
@@ -558,6 +558,86 @@
         "X2",
         "X5",
         "X6"
+      ]
+    },
+    {
+      "id": "flag-renewal",
+      "expect": "flag",
+      "why": "Second review R1 (18.11.2026): the earlier form of the on-run stops a running self-revert and arms a new one. Ordered again before the 40 minutes run out, each run is short on its own, the chain keeps all review roles on the fallback engine without the operator.",
+      "manifest": {
+        "version": "cockpit-host-run/v1",
+        "name": "fallback-test-on-t_0cb8edbd",
+        "purpose": "Fallback test ordered by the operator on 15.11.2026 (card t_0cb8edbd; doc/setup/plan-engine-claude.md, Einrichten step 7): a volatile drop-in under /run/systemd/system sets COCKPIT_CLAUDE_EXECUTABLE=/nonexistent for the agent and the runner unit, so every Claude role must fall back to opencode/DeepSeek and mark NOTBETRIEB. Nothing under /etc changes, no secret is read or written. A transient timer removes the drop-ins and restarts both units after 40 minutes at the latest; a follow-up run removes them earlier. A reboot also removes them (/run).",
+        "mutates": true,
+        "steps": [
+          {
+            "name": "place volatile drop-ins and the self-revert timer",
+            "timeoutSeconds": 60,
+            "run": "set +e +u; set +o pipefail 2>/dev/null || true\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-agent.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf\nmkdir -p /run/systemd/system/wireguard-ops-cockpit-runner.service.d\nprintf '[Service]\\nEnvironment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent\\n' > /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf\nsystemctl daemon-reload\nsystemctl stop cockpit-rueckfalltest-revert-t_0cb8edbd.timer cockpit-rueckfalltest-revert-t_0cb8edbd.service 2>/dev/null || true\nsystemd-run --unit=cockpit-rueckfalltest-revert-t_0cb8edbd --on-active=40min /bin/sh -c 'rm -f /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-agent.service.d 2>/dev/null || true; rm -f /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-runner.service.d 2>/dev/null || true; systemctl daemon-reload; systemctl restart wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service; '\nsystemctl list-timers cockpit-rueckfalltest-revert-t_0cb8edbd.timer --no-pager | head -n 3\n"
+          },
+          {
+            "name": "restart agent and runner units",
+            "timeoutSeconds": 120,
+            "run": "set +e +u; set +o pipefail 2>/dev/null || true\nsystemctl restart wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service\nsleep 5\nsystemctl is-active wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service\n"
+          }
+        ],
+        "checks": [
+          {
+            "name": "drop-ins in place and units active",
+            "timeoutSeconds": 30,
+            "run": "set -eu\ngrep -qx 'Environment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent' /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf\nsystemctl is-active wireguard-ops-cockpit-agent.service\ngrep -qx 'Environment=COCKPIT_CLAUDE_EXECUTABLE=/nonexistent' /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf\nsystemctl is-active wireguard-ops-cockpit-runner.service\n"
+          },
+          {
+            "name": "self-revert timer armed",
+            "timeoutSeconds": 30,
+            "run": "set -eu\nsystemctl is-active cockpit-rueckfalltest-revert-t_0cb8edbd.timer"
+          }
+        ],
+        "rollback": [
+          "Remove /run/systemd/system/<agent|runner unit>.d/50-rueckfalltest-t_0cb8edbd.conf, systemctl daemon-reload, restart both units; the timer cockpit-rueckfalltest-revert-t_0cb8edbd does exactly this after 40 minutes."
+        ],
+        "risk": [
+          "contained"
+        ]
+      },
+      "classes": [
+        "X2",
+        "X5"
+      ]
+    },
+    {
+      "id": "flag-extend-window",
+      "expect": "flag",
+      "why": "Explicitly extends an open fallback window by re-arming the self-revert; the window starts over, nothing is taken back.",
+      "manifest": {
+        "version": "cockpit-host-run/v1",
+        "name": "fallback-test-extend-t_0cb8edbd",
+        "purpose": "The fallback test of card t_0cb8edbd is still running and needs more time: re-arm the self-revert for another 40 minutes so the volatile drop-ins under /run (COCKPIT_CLAUDE_EXECUTABLE=/nonexistent for the agent and runner unit) stay in place. Nothing under /etc changes, no secret is read or written; the new timer removes the drop-ins and restarts both units 40 minutes from now.",
+        "mutates": true,
+        "steps": [
+          {
+            "name": "re-arm the self-revert timer",
+            "timeoutSeconds": 60,
+            "run": "set +e +u; set +o pipefail 2>/dev/null || true\ntest -e /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf || { echo 'no window open'; exit 1; }\ntest -e /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf || { echo 'no window open'; exit 1; }\nsystemctl stop cockpit-rueckfalltest-revert-t_0cb8edbd.timer cockpit-rueckfalltest-revert-t_0cb8edbd.service 2>/dev/null || true\nsystemd-run --unit=cockpit-rueckfalltest-revert-t_0cb8edbd --on-active=40min /bin/sh -c 'rm -f /run/systemd/system/wireguard-ops-cockpit-agent.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-agent.service.d 2>/dev/null || true; rm -f /run/systemd/system/wireguard-ops-cockpit-runner.service.d/50-rueckfalltest-t_0cb8edbd.conf; rmdir /run/systemd/system/wireguard-ops-cockpit-runner.service.d 2>/dev/null || true; systemctl daemon-reload; systemctl restart wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service; '\nsystemctl list-timers cockpit-rueckfalltest-revert-t_0cb8edbd.timer --no-pager | head -n 3\n"
+          }
+        ],
+        "checks": [
+          {
+            "name": "self-revert timer armed",
+            "timeoutSeconds": 30,
+            "run": "set -eu\nsystemctl is-active cockpit-rueckfalltest-revert-t_0cb8edbd.timer"
+          }
+        ],
+        "rollback": [
+          "Stop the timer cockpit-rueckfalltest-revert-t_0cb8edbd and remove the drop-ins 50-rueckfalltest-t_0cb8edbd.conf under /run/systemd/system/<agent|runner unit>.d/, daemon-reload, restart both units."
+        ],
+        "risk": [
+          "contained"
+        ]
+      },
+      "classes": [
+        "X2",
+        "X5"
       ]
     }
   ]

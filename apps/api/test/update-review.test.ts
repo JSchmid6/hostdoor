@@ -179,10 +179,10 @@ describe("self-update pre-install review", () => {
     const path = "apps/api/src/hermes-security.ts";
     const hunk = (index: number) => [`@@ -${index * 100 + 1},40 +${index * 100 + 1},40 @@`, ...Array.from({ length: 40 }, (_, line) => `+h${index} l${line} ${"x".repeat(60)}`)];
     const big = section(path, Array.from({ length: 6 }, (_, index) => hunk(index)).flat());
-    // 23_100: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7).
-    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_100 });
+    // 23_400: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule).
+    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_400 });
     expect(prompts.length).toBeGreaterThan(1);
-    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_100)).toBe(true);
+    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_400)).toBe(true);
     expect(coverage[0]).toMatchObject({ incomplete: [], cut: [], omitted: [] });
     // Every hunk exactly once, whole, with the file header in every part.
     for (let index = 0; index < 6; index += 1) {
@@ -372,7 +372,7 @@ describe("self-update pre-install review", () => {
     const many = Array.from({ length: 6 }, (_, index) => section(`apps/api/src/part-${index}.ts`, ["@@ -1,100 +1,100 @@", ...Array.from({ length: 100 }, (_, line) => `+${index} ${line} ${"p".repeat(60)}`)]));
     const capped = buildUpdateReviewPrompt([diff({
       files: many.map((item) => ({ status: "M", path: item.path, added: 100, deleted: 100, class: "other" })), filesTotal: 6, focusAreas: [], excerpt: many,
-    // 25_000 (was 24_000): room for one part per pass kept when G9 grew (t_befe7fc7).
+    // 25_000 (was 24_000): room for one part per pass kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule).
     })], { nonce: NONCE, limit: 25_000, maxPasses: 2 });
     expect(capped.prompts).toHaveLength(2);
     expect(capped.coverage[0].incomplete.length).toBeGreaterThan(0);

@@ -482,6 +482,11 @@ describe("doorkeeper X2 judged by effect", () => {
     expect(x2).toContain("within the short time the plan states and the purpose needs");
     expect(x2).toContain("creating a file at a path that a runtime drop-in of a Cockpit unit names");
     expect(x2).toContain("the runs in that window are reviewed by the fallback engine");
+    // Second review R1 of 18.11.2026: renewing an open window is not taking it back, else a
+    // chain of short runs holds the fallback open without the operator.
+    expect(x2).toContain("renewing or extending a window that is already open fails (c) as well");
+    expect(x2).toContain("a step that stops, replaces or re-arms an earlier run's self-revert");
+    expect(x2).toContain("a run that stops or re-arms an earlier run's self-revert");
   });
 
   it("keeps code, unit files, helpers, sudoers, secrets, persistence, redirects and widening as findings", () => {
@@ -498,17 +503,24 @@ describe("doorkeeper X2 judged by effect", () => {
 
   it("the pre-install review treats widening the X2 exception as narrowing G9", () => {
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Authority (X2) is judged by effect");
-    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert or the rule that renewing an open window is a finding");
   });
 
   it("every measured case is a valid manifest, and the Cockpit focus still points at the pass cases", () => {
     expect(cases.filter((item) => item.expect === "pass").map((item) => item.id)).toEqual(["pass-fallback-test-on", "pass-fallback-test-off"]);
-    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(11);
+    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(13);
     for (const item of cases) {
       const manifest = parseHostRunManifest(plan(item.manifest));
       expect(manifest, item.id).not.toBeNull();
       expect(buildHostRunReviewPrompt(manifest!, { nonce: "n" }).complete, item.id).toBe(true);
       if (item.expect === "pass") expect(classifyHostRunFocus(manifest!).map((focus) => focus.kind), item.id).toContain("cockpit");
+    }
+    // The on-run that may pass refuses to renew an open window; the renewal forms are flag cases.
+    const on = cases.find((item) => item.id === "pass-fallback-test-on")!.manifest as { steps: Array<{ run: string }> };
+    expect(on.steps[0].run).toContain("fallback window already open: not renewed");
+    expect(on.steps[0].run).not.toContain("systemctl stop cockpit-rueckfalltest-revert");
+    for (const id of ["flag-renewal", "flag-extend-window"]) {
+      expect(cases.find((item) => item.id === id)?.expect, id).toBe("flag");
     }
   });
 });

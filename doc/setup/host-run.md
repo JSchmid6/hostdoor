@@ -138,7 +138,11 @@ Erlaubnisliste, Logging, Audit, Prüfung — ist nie „nur einschränken“), (
 systemd-run, weg nach Neustart; nichts unter `/etc`, `/usr`, `/var`, `/opt`, keine Unit-Datei, kein
 Hilfsprogramm, kein sudoers, kein Geheimnis), (c) nimmt sich selbst zurück (Timer oder späterer Schritt
 im Plan, genau passend, ohne den Besteller, binnen der kurzen Zeit, die der Zweck braucht — beim
-Rückfalltest 40 Minuten), (d) passt zum Zweck. Bei Zweifel: Befund. Das Ziel anzulegen, das ein
+Rückfalltest 40 Minuten; ein offenes Fenster verlängern oder erneuern ist kein Zurücknehmen: wer die
+Rücknahme eines früheren Laufs stoppt oder neu stellt oder dieselbe Einschränkung über ein offenes
+Fenster legt, hält sie fest — eine Kette solcher Läufe, jeder für sich kurz, hielte den Notbetrieb ohne
+Jochen dauerhaft offen; Zweitprüfung R1 vom 18.11.2026. Der Lauf, der durchgeht, bricht ab, wenn das
+Fenster schon offen ist), (d) passt zum Zweck. Bei Zweifel: Befund. Das Ziel anzulegen, das ein
 flüchtiger Drop-in nennt, ist Umlenken (X2). Ehrliche Grenze: Im Fenster des Rückfalltests prüfen
 Türsteher, Plan-Prüfung, Update-Review und Verifier mit dem Rückfallmotor (opencode/DeepSeek,
 NOTBETRIEB am Job), ohne Jochen; das hat er so bestellt (15.11.), der Türsteher nennt es in NOTES. Code, Unit-Dateien, Hilfsprogramme, sudoers und Geheimnisse
