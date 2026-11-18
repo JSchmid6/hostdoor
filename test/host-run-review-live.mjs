@@ -44,28 +44,35 @@ for (const item of cases) {
   const material = hostRun.buildHostRunReviewPrompt(manifest, { role });
   const workspace = broker.createSessionWorkspace({ requestId: randomUUID(), role: "safety" }, sessions);
   const stream = broker.claudeStream();
+  const raw = [];
   const started = Date.now();
   const run = await broker.runProcess(process.env.COCKPIT_CLAUDE_EXECUTABLE || "claude",
     broker.claudeArgs(workspace, model, broker.claudeToolsFor("safety")),
     { ...process.env, DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
-    workspace, material.prompt, 30 * 60 * 1000, (line) => stream.line(line));
+    workspace, material.prompt, 30 * 60 * 1000, (line) => { if (out && line !== null) raw.push(line); stream.line(line); });
   const parsed = stream.result ? broker.parseClaudeResult(JSON.stringify(stream.result)) : { ok: false, reason: `claude exit ${run.code}, no result` };
+  // As the broker and reviewHostRun: a review Claude's safety classifier stopped
+  // fails with the count, and what came through stays the answer (card t_9f370d63).
+  const safetyStops = broker.claudeSafetyStops(stream.result);
   const outcome = { manifestHash: hostRun.hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus,
     answer: parsed.ok ? hostRun.verifyHostRunFindings(hostRun.parseHostRunReviewAnswer(redactSecrets(parsed.output)), manifest) : null,
-    reviewerError: parsed.ok ? null : parsed.reason };
+    reviewerError: safetyStops ? `claude's safety classifier stopped the review ${safetyStops} time(s)` : parsed.ok ? null : parsed.reason, safetyStops };
   const policy = hostRun.hostRunPolicy(manifest, outcome);
   const got = policy.status === "ready" ? "pass" : policy.status === "blocked_user_approval" ? "flag" : policy.status;
   const findings = (outcome.answer?.findings || []).map((f) => ({ class: f.class, where: f.where, title: f.title, evidenced: f.evidenced, path: f.path }));
-  const classOk = item.expect !== "flag" || !item.classes || findings.some((f) => f.evidenced && item.classes.includes(f.class));
+  // A stopped review withholds its class: the flag itself is what is measured.
+  const classOk = item.expect !== "flag" || !item.classes || (safetyStops > 0 && got === "flag") || findings.some((f) => f.evidenced && item.classes.includes(f.class));
   const result = { id: item.id, role, expect: item.expect, got, ok: got === item.expect, classOk, seconds: Math.round((Date.now() - started) / 1000),
-    model: parsed.model || null, permissionDenials: stream.result?.permission_denials?.length ?? null, toolUses: stream.toolUses, findings, reason: policy.reason };
+    model: parsed.model || null, safetyStops, permissionDenials: stream.result?.permission_denials?.length ?? null, toolUses: stream.toolUses, findings, reason: policy.reason };
   results.push(result);
   if (out) {
     fs.writeFileSync(path.join(out, `${item.id}.prompt.md`), material.prompt);
     fs.writeFileSync(path.join(out, `${item.id}.answer.md`), parsed.ok ? parsed.output : `NO ANSWER: ${parsed.reason}`);
     fs.writeFileSync(path.join(out, `${item.id}.result.json`), JSON.stringify(result, null, 2));
+    // The whole stream: where a cut-off answer stopped and why (stop_reason).
+    fs.writeFileSync(path.join(out, `${item.id}.stream.jsonl`), raw.map((line) => redactSecrets(line)).join("\n") + "\n");
   }
-  console.log(`${result.ok && result.classOk ? "OK  " : "FAIL"} ${item.id} expect=${item.expect} got=${got} ${findings.map((f) => `${f.class}@${f.where}${f.evidenced ? "" : "(unbelegt)"}`).join(" ")} (${result.seconds}s)`);
+  console.log(`${result.ok && result.classOk ? "OK  " : "FAIL"} ${item.id} expect=${item.expect} got=${got}${safetyStops ? ` stops=${safetyStops}` : ""} ${findings.map((f) => `${f.class}@${f.where}${f.evidenced ? "" : "(unbelegt)"}`).join(" ")} (${result.seconds}s)`);
   fs.rmSync(workspace, { recursive: true, force: true });
 }
 fs.rmSync(sessions, { recursive: true, force: true });

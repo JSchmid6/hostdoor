@@ -157,7 +157,19 @@ schon gelaufen sein, und ein zweiter Motor würde sie noch einmal ausführen. Da
 „claude failed after N tool call(s), no stand-in so no step runs twice: …“, wie jeder gescheiterte
 Runner (Verifier und Breaker wie gehabt). Für die lesenden Rollen bleibt der Rückfall wie bisher.
 
-- Broker-Antwort: `engine: {name, model}`, im Rückfall zusätzlich `notbetrieb: true, reason`.
+**Safety, vom Sicherheitsfilter gestoppt (18.11.2026, Karte t_9f370d63):** Stoppt Claudes eigener
+Sicherheitsfilter die Antwort (result-Event `safety_stops` > 0; die CLI meldet „safeguards stopped the
+response · continuing once“, lässt das Modell einmal fortsetzen und gibt in `result` nur diese Fortsetzung
+zurück), springt für die Rolle `safety` **kein** Rückfall ein: Ein schwächerer Motor soll nicht prüfen,
+woran der stärkere gestoppt wurde. Der Broker antwortet `ok: false` mit „claude's safety classifier stopped
+the review N time(s); the rest was withheld, no stand-in“, der Fortsetzung als `output` (falls vorhanden)
+und `engine.safetyStops`. Der Türsteher macht daraus einen Stopp an Jochen (`doc/setup/host-run.md`,
+Abschnitt 2); Plan-Sicherheitsprüfung und Pre-install-Review sehen einen gescheiterten Prüfer wie bisher
+(nie ein Durchlass). Andere Rollen behalten ihre Antwort, der Zähler steht am Motor. Fehlt das Feld (ältere
+CLI), gilt 0, also das alte Verhalten.
+
+- Broker-Antwort: `engine: {name, model}`, im Rückfall zusätzlich `notbetrieb: true, reason`, nach einem
+  Stopp durch Claudes Sicherheitsfilter `safetyStops: N`.
 - Job: `output.agentEngine.<rolle>` (bleibt über alle späteren Updates) und bei Rückfall — auch wenn
   der Rückfall selbst scheitert — `output.notbetrieb = "NOTBETRIEB: planner ran on <modell> (opencode) because Claude failed: <grund>"`,
   gebildet aus dem jeweils letzten Motor je Rolle (ein Neuplanen über Claude löscht es für diese Rolle;

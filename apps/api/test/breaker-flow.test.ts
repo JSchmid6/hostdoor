@@ -78,7 +78,7 @@ async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number
   // busy: so many starts the helper still refuses because another run holds the host.
   // engine: what the broker reports for the planner (t_936d9b0f); unset like an older broker.
   // reviewEngine/verifierEngine: the same for the doorkeeper and the verifier (t_dc74af18).
-  const host: { status: "success" | "failed"; doorkeeper: string; busy: number; busyMessage: string; plan: string; engine?: Record<string, unknown>; plannerFails?: boolean; reviewEngine?: Record<string, unknown>; verifierEngine?: Record<string, unknown> } = {
+  const host: { status: "success" | "failed"; doorkeeper: string; busy: number; busyMessage: string; plan: string; engine?: Record<string, unknown>; plannerFails?: boolean; reviewEngine?: Record<string, unknown>; verifierEngine?: Record<string, unknown>; reviewStopped?: boolean } = {
     status: "failed", doorkeeper: "VERDICT: pass\nNOTES: routine apt maintenance", busy: 0, busyMessage: "another host run is active: 3e06625f-0000", plan,
   };
   const executorCalls = await listen(path.join(dir, "executor.sock"), (request) => {
@@ -101,6 +101,8 @@ async function setup(overrides: Partial<AppConfig> = {}, slot: { pollMs?: number
   const agentCalls = await listen(path.join(dir, "agent.sock"), (request) => {
     if (request.role === "planner" && host.plannerFails) return { ok: false, error: "opencode exited with 1", ...(host.engine ? { engine: host.engine } : {}) };
     if (request.role === "planner") return { ok: true, output: host.plan, ...(host.engine ? { engine: host.engine } : {}) };
+    // reviewStopped: Claude's safety classifier stopped the review (broker answer since t_9f370d63).
+    if (request.role === "safety" && host.reviewStopped) return { ok: false, error: "claude's safety classifier stopped the review 1 time(s); the rest was withheld, no stand-in", output: host.doorkeeper, engine: { name: "claude", model: "claude-opus-5-5", safetyStops: 1 } };
     if (request.role === "safety") return { ok: true, output: host.doorkeeper, ...(host.reviewEngine ? { engine: host.reviewEngine } : {}) };
     return { ok: true, output: "VERIFICATION_STATUS: passed\nEVIDENCE: no upgradable packages\nREASON: done", ...(host.verifierEngine ? { engine: host.verifierEngine } : {}) };
   });
@@ -500,6 +502,24 @@ describe("change circuit breaker through the API", () => {
     const fallback = await flow.submit({ operation: "apt-review-fallback" });
     expect(fallback.status).toBe("completed");
     expect(fallback.output?.notbetrieb).toBe("NOTBETRIEB: doorkeeper ran on deepseek/deepseek-v4-pro (opencode) because Claude failed: Claude AI usage limit reached");
+  }, 15_000);
+
+  // Card t_9f370d63: a doorkeeper review that Claude's safety classifier stopped
+  // reaches the operator as a flag (never a pass, never an incomplete review),
+  // with the stop counted on the job's engine; the operator can still decide.
+  it("sends a doorkeeper review stopped by Claude's safety classifier to the operator, even when the continuation says pass", async () => {
+    const flow = await setup({}, { brokerDoorkeeper: true });
+    flow.host.status = "success";
+    flow.host.reviewStopped = true;
+    flow.host.doorkeeper = "VERDICT: pass\nNOTES: my earlier answer was cut off";
+    const waiting = await flow.submit({ operation: "t_safety_stop" });
+    expect(waiting.status).toBe("blocked_user_approval");
+    expect(String(waiting.output?.reason ?? JSON.stringify(waiting.output))).toContain("safety classifier stopped its review (1 stop(s))");
+    expect(waiting.output?.agentEngine).toMatchObject({ doorkeeper: { name: "claude", model: "claude-opus-5-5", safetyStops: 1 } });
+    expect(flow.executorCalls.filter((call) => call.payload.action === "host.run")).toHaveLength(0);
+    const approved = await flow.app.inject({ method: "POST", url: `/api/hermes/jobs/${waiting.id}/approval`, headers: { cookie: flow.cookie }, payload: { decision: "approved", reason: "read the steps myself" } });
+    expect(approved.statusCode).toBe(202);
+    expect((await flow.settled(waiting.id)).status).toBe("completed");
   }, 15_000);
 
   // The approval path continues from the job as it was before the verifier ran;

@@ -540,6 +540,8 @@ export interface HostRunReviewOutcome {
   focus: HostRunFocus[];
   answer?: HostRunReviewAnswer | null;
   reviewerError?: string | null;
+  // How often Claude's safety classifier stopped the doorkeeper's answer (card t_9f370d63).
+  safetyStops?: number;
   reviewPath?: string | null;
 }
 
@@ -583,6 +585,20 @@ export function hostRunPolicy(manifest: HostRunManifest, outcome: HostRunReviewO
     neededToContinue: ["Submit the plan again (smaller steps if the material was too large); an incomplete review is never an approval request."],
   });
   if (!outcome.complete) return incomplete(outcome.missing.join("; ") || "review material incomplete");
+  // A review that Claude's safety classifier stopped (structured count from the
+  // broker, no text match) counts as a flag: the classifier stopped the reviewer
+  // while it described a harm, and the reasoning is withheld. It goes to the
+  // operator, never to a pass, whatever verdict the continuation gives
+  // (card t_9f370d63); only evidenced findings that came through are shown.
+  if (outcome.safetyStops) {
+    const through = (outcome.answer?.findings || []).filter((finding) => finding.evidenced);
+    return {
+      ...base, zone: "red", allowed: false, status: "blocked_user_approval",
+      reason: `The doorkeeper flagged: Claude's safety classifier stopped its review (${outcome.safetyStops} stop(s)) and withheld the reasoning, so nothing runs without the operator.${through.length ? ` Findings that came through: ${through.map((finding) => `${finding.where} ${finding.title}`).join("; ").slice(0, 300)}.` : ""}${riskReason ? ` ${riskReason}` : ""}`,
+      evidence: [...base.evidence, `doorkeeper stopped by Claude's safety classifier: ${outcome.safetyStops} stop(s)`, ...through.map(describeFinding), ...outcome.focus.map((hit) => `focus ${hit.where} ${hit.kind}: ${hit.reason}`), ...riskEvidence],
+      neededToContinue: ["The model's safety classifier withheld the doorkeeper's reasoning: read the steps yourself (the focus hits name what stood out), then approve or reject exactly this signed plan."],
+    };
+  }
   if (outcome.reviewerError) return incomplete(`the reviewer did not answer (${outcome.reviewerError.slice(0, 300)})`);
   const answer = outcome.answer;
   if (!answer || answer.verdict === "invalid") return incomplete(`the reviewer's answer could not be read (${answer?.problem || "no answer"})`);
@@ -625,6 +641,7 @@ export function hostRunSafetyRecord(manifest: HostRunManifest, outcome: HostRunR
       focus: outcome.focus,
       reviewPath: outcome.reviewPath ?? null,
       reviewerError: outcome.reviewerError ?? null,
+      safetyStops: outcome.safetyStops ?? 0,
       verdict: outcome.answer?.verdict ?? null,
       problem: outcome.answer?.problem ?? null,
       findings: outcome.answer?.findings ?? [],

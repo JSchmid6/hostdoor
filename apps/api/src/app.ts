@@ -2247,6 +2247,12 @@ export async function createApp(options: AppOptions = {}) {
       outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest);
     } catch (error) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
+      // Stopped by Claude's safety classifier: the stop goes to the operator
+      // (hostRunPolicy); findings that came through before it stay evidence.
+      if (error instanceof BrokerAgentError && error.engine?.safetyStops) {
+        outcome.safetyStops = error.engine.safetyStops;
+        if (error.output) outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(error.output)), manifest);
+      }
     }
     return outcome;
   }

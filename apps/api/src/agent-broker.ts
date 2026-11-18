@@ -36,6 +36,8 @@ export interface AgentEngine {
   reason?: string;
   // Claude's own permission checks that refused a tool call (bypassPermissions: none expected).
   permissionDenials?: number;
+  // How often Claude's safety classifier stopped the answer (card t_9f370d63).
+  safetyStops?: number;
 }
 
 export function isAgentEngine(value: unknown): value is AgentEngine {
@@ -50,11 +52,14 @@ function brokerEngine(value: unknown): AgentEngine | null {
     name: engine.name.slice(0, 40), model: engine.model.slice(0, 120),
     ...(engine.notbetrieb === true ? { notbetrieb: true as const, reason: typeof engine.reason === "string" ? engine.reason.slice(0, 300) : "unknown" } : {}),
     ...(Number.isInteger(engine.permissionDenials) && (engine.permissionDenials as number) > 0 ? { permissionDenials: Math.min(engine.permissionDenials as number, 1_000_000) } : {}),
+    ...(Number.isInteger(engine.safetyStops) && (engine.safetyStops as number) > 0 ? { safetyStops: Math.min(engine.safetyStops as number, 1_000) } : {}),
   };
 }
 
+// output: what a failed run still answered (a review Claude's safety
+// classifier stopped hands back its continuation, card t_9f370d63).
 export class BrokerAgentError extends Error {
-  constructor(message: string, readonly engine: AgentEngine | null) {
+  constructor(message: string, readonly engine: AgentEngine | null, readonly output?: string) {
     super(message);
   }
 }
@@ -83,7 +88,7 @@ export async function runBrokerAgentWithEngine(socketPath: string, role: AgentBr
         const parsed = JSON.parse(response) as { ok?: boolean; output?: string; error?: string; engine?: unknown };
         // A failed run still names its engine: Claude failed and the stand-in too
         // is a NOTBETRIEB the job must show (BrokerAgentError.engine).
-        if (!parsed.ok || typeof parsed.output !== "string") reject(new BrokerAgentError(parsed.error || "agent broker failed", brokerEngine(parsed.engine)));
+        if (!parsed.ok || typeof parsed.output !== "string") reject(new BrokerAgentError(parsed.error || "agent broker failed", brokerEngine(parsed.engine), typeof parsed.output === "string" ? parsed.output : undefined));
         else resolve({ output: parsed.output, engine: brokerEngine(parsed.engine) });
       } catch (error) { reject(error); }
     });
