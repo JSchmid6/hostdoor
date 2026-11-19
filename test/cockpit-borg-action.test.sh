@@ -1069,10 +1069,22 @@ if [ -z "\$q" ]; then
   exit 0
 fi
 case "\$q" in
-  "SELECT CURRENT_USER()") echo "\$u@localhost" ;;
+  "SELECT CURRENT_USER()") if [ "\$u" = root ] && [ -f "$DB/socket-user" ]; then cat "$DB/socket-user"; else echo "\$u@localhost"; fi ;;
   "SELECT 1") echo 1 ;;
   "SELECT COUNT(*) FROM mysql.user"*) if [ -e "$DB/frame-line" ]; then echo "--------------" >&2; echo "ERROR 1227 (42000): Access denied; you need the CREATE USER privilege" >&2; exit 1; fi; [ -f "$DB/created-hash" ] && echo 1 || echo 0 ;;
   "SHOW DATABASES") printf '%s\n' information_schema mysql nextDB wordpress ;;
+  "SELECT VERSION()") echo "10.11.14-MariaDB-0ubuntu0.24.04.1" ;;
+  "SELECT PLUGIN_STATUS FROM information_schema.PLUGINS"*) echo ACTIVE ;;
+  "SELECT CONCAT(Host, ' ', IF("*"FROM mysql.global_priv WHERE User = 'root' AND Host = IF(EXISTS("*)
+    # root-socket: Bedingung am Ziel-Eintrag, gelesen mit dem Konto der Datei
+    printf '%s\n' "\$u \$q" >> "$DB/root-cond.log"
+    [ "\$u" = nextDB ] && { echo "ERROR 1142 (42000): SELECT command denied to user 'nextDB'@'localhost' for table global_priv" >&2; exit 1; }
+    cat "$DB/root-cond" 2>/dev/null ;;
+  "SELECT CONCAT_WS"*"FROM mysql.global_priv WHERE User = 'root'"*)
+    # root-auth: nur cockpit_backup (SELECT auf *.*) und root lesen mysql.*
+    printf '%s\n' "\$u \$q" >> "$DB/root-auth.log"
+    [ "\$u" = nextDB ] && { echo "ERROR 1142 (42000): SELECT command denied to user 'nextDB'@'localhost' for table global_priv" >&2; exit 1; }
+    cat "$DB/root-priv" ;;
   *) echo "ERROR 1064: unerwartete Abfrage \$q" >&2; exit 1 ;;
 esac
 EOF
@@ -1311,7 +1323,9 @@ case "\$opts" in
       echo inactive > "$WORK/units/mariadb.state"; exit 1
     fi
     [ -e "$DB/init-noop" ] && exit 0
-    sed -n "s/^ALTER USER 'cockpit_backup'@'localhost' IDENTIFIED BY PASSWORD '\([^']*\)';\$/\1/p" "\$f" | tr -d '\n' > "$DB/created-hash"
+    # Nur eine Datei mit dem Konto ändert dessen Hash (root-socket schreibt keins).
+    h="\$(sed -n "s/^ALTER USER 'cockpit_backup'@'localhost' IDENTIFIED BY PASSWORD '\([^']*\)';\$/\1/p" "\$f" | tr -d '\n')"
+    [ -n "\$h" ] && printf '%s' "\$h" > "$DB/created-hash"
     grep -q "IDENTIFIED VIA unix_socket OR " "\$f" && : > "$DB/root-socket"
     ;;
 esac
@@ -1410,8 +1424,11 @@ if grep -qF "GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, SHOW DATABASES ON *.
   && grep -qF "REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'cockpit_backup'@'localhost';" "$DB/init-seen.sql"; then ok "Init-Datei: nur lesende Rechte, vorher alle entzogen"; else bad "Init-Datei: Rechte-SQL anders als erwartet"; fi
 if grep -qE '(^|[^A-Z])(ALL PRIVILEGES ON|WITH GRANT OPTION|SUPER|FILE|EVENT)' "$DB/init-seen.sql"; then bad "Init-Datei: zu weite Rechte"; else ok "Init-Datei: keine weiten Rechte"; fi
 ROOTLINE="$(grep -F 'SET @cockpit_root = (SELECT' "$DB/init-seen.sql")"
-if grep -qF "'ALTER USER ''root''@''localhost'' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))" <<<"$ROOTLINE" \
-  && grep -qF "IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1" <<<"$ROOTLINE" && grep -qF "FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost'" <<<"$ROOTLINE" \
+sed -n '/^SET @cockpit_root = (SELECT/,$p' "$DB/init-seen.sql" > "$WORK/root-sql-boot"
+db_root_lines() { grep -c . "$WORK/root-sql-boot"; }
+if grep -qF "'ALTER USER ''root''@', QUOTE(Host), ' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))" <<<"$ROOTLINE" \
+  && grep -qF "IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1" <<<"$ROOTLINE" \
+  && grep -qF "FROM mysql.global_priv WHERE User = 'root' AND Host = IF(EXISTS(SELECT 1 FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost'), 'localhost', '%'))" <<<"$ROOTLINE" \
   && grep -qF "'DO 0')" <<<"$ROOTLINE" && [ "$(grep -o 'IDENTIFIED VIA' <<<"$ROOTLINE" | wc -l)" = 1 ]; then
   ok "root: unix_socket nur ZUSÄTZLICH zum bisherigen Verfahren, sonst DO 0 (kein Zweig nimmt root etwas)"
 else bad "root-Zeile anders als erwartet"; fi
@@ -1451,6 +1468,151 @@ assert_no_file "config.php nicht gelesen (kein runuser)" "$DB/runuser.log"
 no_secret_out "Rotation ohne Passwort in der Ausgabe"
 db cgroup-run check
 assert_rc "check nach der Rotation" 0
+
+# --- db-access root-socket: nur root bekommt unix_socket (Karte t_f0718728) ---
+# Stand wie auf dem VPS nach bootstrap: die Datei trägt cockpit_backup, root per
+# Socket scheitert (es gibt nur root@%). root-cond ist die Antwort der
+# Bedingungsabfrage ("<host> erfuellt|nicht-erfuellt").
+rs() { # rs <cgroup-datei>
+  run_helper_env COCKPIT_BORG_ACTION_DB_CNF="$DB/mysqldump.cnf" COCKPIT_BORG_ACTION_NC_CONFIG="$DB/config.php" \
+    COCKPIT_BORG_ACTION_DB_INIT_GROUP="$INIT_GROUP" COCKPIT_BORG_ACTION_DB_INIT_BASE="$INIT_BASE" \
+    COCKPIT_BORG_ACTION_CGROUP_FILE="$DB/$1" -- db-access root-socket
+}
+rs_reset() { # wie nach bootstrap ohne unix_socket für root
+  rm -f "$DB/root-socket" "$DB/socket-user" "$DB/restart.log" "$DB"/init-* "$DB/root-cond.log" "$WORK/manager-env" "$WORK/unset-broken" "$WORK/units/mariadb.state"
+  cp -a "$WORK/cnf-vor-rs" "$DB/mysqldump.cnf"
+  printf '%% erfuellt\n' > "$DB/root-cond"
+}
+cp -a "$DB/mysqldump.cnf" "$WORK/cnf-vor-rs" # Stand nach bootstrap und Rotation (cockpit_backup gilt)
+echo "== db-access root-socket: Herkunft und Vorbedingungen (nichts verändert, kein Neustart) =="
+rs_reset
+rs cgroup-executor
+assert_rc "root-socket über den Executor abgewiesen" 64
+: > "$WORK/borgmatic-busy"; rs cgroup-run; rm -f "$WORK/borgmatic-busy"
+assert_rc "root-socket während des Backups abgewiesen" 3
+echo inactive > "$WORK/units/mariadb.state"; rs cgroup-run; rm -f "$WORK/units/mariadb.state"
+assert_rc "root-socket bei gestoppter Datenbank abgewiesen" 67
+printf '%% nicht-erfuellt\n' > "$DB/root-cond"; rs cgroup-run
+assert_rc "root erfüllt die Bedingung nicht: abgewiesen" 67
+assert_err "Grund nennt den Eintrag" "root@% erfüllt die Bedingung nicht"
+: > "$DB/root-cond"; rs cgroup-run
+assert_rc "kein Ziel-Eintrag für root: abgewiesen" 67
+printf '%% erfuellt\nlocalhost erfuellt\n' > "$DB/root-cond"; rs cgroup-run
+assert_rc "zwei Ziel-Einträge: abgewiesen" 67
+printf '%% erfuellt\n' > "$DB/root-cond"
+cp -a "$DB/cnf-original" "$DB/mysqldump.cnf"; rs cgroup-run; cp -a "$WORK/cnf-vor-rs" "$DB/mysqldump.cnf"
+assert_rc "Datei auf nextDB (global_priv nicht lesbar): abgewiesen" 67
+assert_err "Grund: Bedingung nicht lesbar" "ist nicht lesbar"
+printf 'MYSQLD_OPTS=--irgendwas\n' > "$WORK/manager-env"; rs cgroup-run; rm -f "$WORK/manager-env"
+assert_rc "fremdes MYSQLD_OPTS im Manager: abgewiesen" 67
+[ "$(restarts)" = 0 ] && ok "root-socket: kein Neustart bei abgewiesenen Vorbedingungen" || bad "root-socket: Neustart trotz abgewiesener Vorbedingung ($(restarts))"
+cmp -s "$DB/mysqldump.cnf" "$WORK/cnf-vor-rs" && ok "root-socket: Datei nie verändert" || bad "root-socket: Datei verändert"
+if grep -q '^cockpit_backup ' "$DB/root-cond.log" 2>/dev/null && ! grep -qv '^cockpit_backup ' "$DB/root-cond.log"; then ok "Bedingung gelesen mit dem Konto der Datei"; else bad "Bedingung nicht mit dem Konto der Datei gelesen"; fi
+assert_no_file "root-socket liest config.php nie" "$DB/runuser.log"
+
+echo "== db-access root-socket: Optionsdatei fehlt → Bedingung nicht lesbar, kein Neustart =="
+rs_reset; rm -f "$DB/mysqldump.cnf"
+rs cgroup-run
+assert_rc "root-socket ohne Optionsdatei" 67
+[ "$(restarts)" = 0 ] && ok "ohne Optionsdatei kein Neustart" || bad "ohne Optionsdatei: Neustart ($(restarts))"
+
+echo "== db-access root-socket: anonymer Nutzer meldet sich per Socket an → zählt nicht als root =="
+rs_reset; : > "$DB/root-socket"; printf '@localhost\n' > "$DB/socket-user"
+rs cgroup-run; rm -f "$DB/socket-user"
+assert_rc "anonymer Nutzer statt root" 1
+assert_no_out "kein 'schon eingerichtet' für einen anonymen Nutzer" "kein Neustart"
+assert_err "Nachprüfung verlangt root" "die Init-Datei hat nicht gewirkt"
+[ "$(restarts)" = 1 ] && ok "anonymer Nutzer: ein Neustart, dann laut" || bad "anonymer Nutzer: nicht genau ein Neustart ($(restarts))"
+
+echo "== db-access root-socket: Start mit der Init-Datei scheitert → normal neu gestartet =="
+rs_reset; : > "$DB/init-abort"
+rs cgroup-run; rm -f "$DB/init-abort"
+assert_rc "root-socket mit abgebrochenem Start" 1
+[ "$(restarts)" = 2 ] && ok "zweiter, normaler Start" || bad "nicht genau zwei Starts ($(restarts))"
+if tail -n 1 "$DB/restart.log" | grep -qx 'restart opts='; then ok "der zweite Start läuft ohne Init-Datei"; else bad "der zweite Start hat noch MYSQLD_OPTS"; fi
+assert_err "Grund nennt den Rückweg" "normal neu gestartet: active"
+clean_after "root-socket Abbruch"
+
+echo "== db-access root-socket: MYSQLD_OPTS lässt sich nicht zurücknehmen → kein Rückweg-Neustart =="
+rs_reset; : > "$WORK/unset-broken"; : > "$DB/init-abort"
+rs cgroup-run; rm -f "$WORK/unset-broken" "$DB/init-abort"
+assert_rc "root-socket bei nicht rücknehmbarem MYSQLD_OPTS" 1
+assert_err "Warnung nennt den Handgriff" "systemctl unset-environment MYSQLD_OPTS"
+[ "$(restarts)" = 1 ] && ok "kein zweiter Start mit stehengebliebenem --init-file" || bad "Rückweg-Neustart trotz stehengebliebenem MYSQLD_OPTS ($(restarts))"
+rm -f "$WORK/manager-env"
+
+echo "== db-access root-socket: Init-Datei wirkt nicht → rc=1, Datenbank läuft =="
+rs_reset; : > "$DB/init-noop"
+rs cgroup-run; rm -f "$DB/init-noop"
+assert_rc "root-socket ohne Wirkung der Init-Datei" 1
+assert_err "Grund genannt" "die Init-Datei hat nicht gewirkt"
+[ "$(restarts)" = 1 ] && ok "nur ein Start" || bad "nicht genau ein Start ($(restarts))"
+clean_after "root-socket ohne Wirkung"
+
+echo "== db-access root-socket: root@% bekommt unix_socket, ein Neustart =="
+rs_reset
+rs cgroup-run
+assert_rc "root-socket" 0
+no_secret_out "root-socket ohne Passwort in der Ausgabe"
+[ "$(restarts)" = 1 ] && ok "genau ein Neustart" || bad "nicht genau ein Neustart ($(restarts))"
+[ "$(cat "$DB/init-stat" 2>/dev/null)" = "root:$INIT_GROUP 640" ] && ok "Init-Datei root:<mysql> 0640" || bad "Init-Datei: $(cat "$DB/init-stat" 2>/dev/null)"
+clean_after "root-socket"
+if [ "$(grep -c . "$DB/init-seen.sql")" = "$(db_root_lines)" ] && ! grep -qiE "cockpit_backup|IDENTIFIED BY|GRANT|REVOKE|DROP|CREATE USER|SET PASSWORD" "$DB/init-seen.sql"; then
+  ok "Init-Datei enthält nur die root-Sätze (kein Konto, kein Hash, keine Rechte)"
+else bad "Init-Datei von root-socket enthält mehr als die root-Sätze"; fi
+cmp -s "$DB/init-seen.sql" "$WORK/root-sql-boot" && ok "dieselben root-Sätze wie bootstrap (eine Stelle)" || bad "root-socket schreibt andere root-Sätze als bootstrap"
+cmp -s "$DB/mysqldump.cnf" "$WORK/cnf-vor-rs" && ok "Datei unverändert" || bad "Datei verändert"
+assert_out "Ausgabe nennt das Ziel" "root@%: unix_socket zusätzlich zum bisherigen Verfahren"
+assert_out "root per Socket gemeldet" "root per socket: ok root@localhost"
+
+echo "== db-access root-socket: zweiter Aufruf ändert nichts =="
+rs cgroup-run
+assert_rc "root-socket ein zweites Mal" 0
+assert_out "schon eingerichtet gemeldet" "kein Neustart"
+[ "$(restarts)" = 1 ] && ok "kein weiterer Neustart" || bad "zweiter Aufruf startet neu"
+
+# --- db-access root-auth: lesender Befund zur Anmeldung von root (Karte t_f0718728)
+printf '%s\n' "root@localhost plugin=mysql_native_password hash=ja auth_or=0[] gesperrt=nein bootstrap-bedingung=erfuellt" \
+  "root@% plugin=mysql_native_password hash=ja auth_or=0[] gesperrt=nein" > "$DB/root-priv"
+echo "== db-access root-auth: über root per Socket =="
+rm -f "$DB/runuser.log" "$DB/root-auth.log"
+db cgroup-run root-auth
+assert_rc "root-auth" 0
+assert_out "gelesen als root per Socket" "gelesen als root-socket"
+assert_out "nennt root@localhost mit Plugin" "root@localhost plugin=mysql_native_password"
+assert_out "nennt die bootstrap-Bedingung" "bootstrap-bedingung=erfuellt"
+assert_out "nennt den Zustand des unix_socket-Plugins" "plugin unix_socket: ACTIVE"
+assert_no_file "config.php nicht gelesen (kein runuser, kein X1)" "$DB/runuser.log"
+# Jeder Bezug auf den Hash steht nur in einem Vergleich (= '' / = 'invalid' / <> '').
+if [ -s "$DB/root-auth.log" ] && ! grep -o "authentication_string')[^A-Za-z]\{0,10\}" "$DB/root-auth.log" | grep -vE "^authentication_string'\)(, ''\) (=|<>) | = )" | grep -q .; then
+  ok "root-auth nutzt authentication_string nur im Vergleich"
+else bad "root-auth gibt authentication_string womöglich aus"; fi
+# Priv nur über die erlaubten Pfade (Plugin, Vergleich auf den Hash, Sperre, Länge
+# von auth_or, deren Plugins) — nie Priv oder auth_or als Ganzes (Zweitprüfung #116).
+pz="$(grep -o 'Priv' "$DB/root-auth.log" 2>/dev/null | wc -l)"
+pe="$(grep -oE "(JSON_VALUE\(Priv, '\\\$\.(plugin|authentication_string|account_locked)'|JSON_LENGTH\(Priv, '\\\$\.auth_or'|JSON_EXTRACT\(Priv, '\\\$\.auth_or\[\*\]\.plugin')\)" "$DB/root-auth.log" 2>/dev/null | wc -l)"
+if [ "$pz" -gt 0 ] && [ "$pz" = "$pe" ]; then ok "root-auth liest Priv nur über erlaubte Pfade ($pe)"; else bad "root-auth liest Priv über einen anderen Pfad ($pe von $pz erlaubt)"; fi
+no_secret_out "root-auth ohne Passwort"
+echo "== db-access root-auth: ohne Socket über das Backup-Konto der Datei =="
+rm -f "$DB/root-socket" "$DB/root-auth.log"
+db cgroup-run root-auth
+assert_rc "root-auth über die Optionsdatei" 0
+assert_out "gelesen als cockpit_backup" "gelesen als cockpit_backup (Optionsdatei)"
+assert_out "root per Socket als Fehlerzeile" "root per socket: ERROR 1045"
+if grep -q '^cockpit_backup ' "$DB/root-auth.log" 2>/dev/null; then ok "Abfrage lief als cockpit_backup"; else bad "Abfrage lief nicht als cockpit_backup"; fi
+assert_no_file "config.php nicht gelesen" "$DB/runuser.log"
+no_secret_out "root-auth über die Datei ohne Passwort"
+echo "== db-access root-auth: Datei auf nextDB → global_priv nicht lesbar, rc=1, kein X1 =="
+cp -a "$DB/mysqldump.cnf" "$WORK/cnf-vor-rootauth"
+printf '[client]\nuser=nextDB\npassword="%s"\n' "$NCPASS" > "$DB/mysqldump.cnf"
+db cgroup-run root-auth
+assert_rc "root-auth ohne Leserecht auf mysql.*" 1
+assert_out "nennt die Fehlerzeile" "mysql.global_priv: ERROR 1142"
+assert_no_file "auch dann kein runuser" "$DB/runuser.log"
+no_secret_out "root-auth mit nextDB ohne Passwort"
+cp -a "$WORK/cnf-vor-rootauth" "$DB/mysqldump.cnf"; touch "$DB/root-socket"
+db cgroup-executor root-auth
+assert_rc "root-auth über den Executor abgewiesen" 64
 
 # --- sources: Backup-Quellen ergänzen (Karte t_2b394537) ---------------------
 # Hinzufügen frei, Schwächen beim Riegel: geprüft werden die Grammatik und die

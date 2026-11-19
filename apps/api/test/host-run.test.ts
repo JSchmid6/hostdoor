@@ -537,7 +537,7 @@ describe("host door: code from reviewed repositories", () => {
     expect(material.prompt).toContain("content not shown: it does not fit the review budget (unseen code)");
     expect(material.prompt).not.toContain("F2:L1");
     const answer = parseHostRunReviewAnswer("VERDICT: flag\nFINDING: a\nCLASS: X5\nWHERE: F2:L1\nCODE: x = 1\nPATH: runs unseen code as root here\nSEVERITY: high\nFINDING: b\nCLASS: X2\nWHERE: F1:L2\nCODE: ExecStart=/opt/server-dienste/bin/werkzeug\nPATH: a permanent root unit the purpose does not explain\nSEVERITY: medium");
-    const verified = verifyHostRunFindings(answer, manifest, material.files);
+    const verified = verifyHostRunFindings(answer, manifest, null, material.files);
     expect(verified.findings.map((finding) => finding.evidenced)).toEqual([false, true]);
     // Without files the plan alone: F ids are no material.
     expect(verifyHostRunFindings(answer, manifest).findings.every((finding) => !finding.evidenced)).toBe(true);

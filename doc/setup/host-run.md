@@ -175,16 +175,17 @@ Seitdem liest das Cockpit diese Dateien selbst und legt sie dem Türsteher vor:
   hielt solcher Code als X5 bei Jochen. Module, die sie aus demselben geprüften Stand lädt und die der
   Commit versioniert, sind ebenfalls kein verborgener Code. Die Sauberkeitsprüfung sieht nur
   versionierte Dateien (`--untracked-files=no`): eine unversionierte Datei daneben (Modul, gelesene
-  Konfiguration) bleibt ungesehener Code (H5).
+  Konfiguration) bleibt ungesehener Code (H5). Befunde dürfen `F<n>:L<zeile>` als Beleg nennen.
+  Dateien gehen ganz oder gar nicht mit; was nicht ins Budget passt, heißt „content not shown …
+  (unseen code)“ und macht die Prüfung nicht unvollständig — dann urteilt der Türsteher wie bisher.
 - **Fälschungssicher (Zweitprüfung t_8884b442, B1):** Die Kopfzeile des echten Abschnitts trägt die
   Nonce der Prüfdaten-Marker (`BEGIN_REVIEW_DATA <nonce>`), die der Antragsteller nicht kennt. Nur dieser
   Abschnitt zählt; jeder andere Text, der sich so nennt, ist ein X6-Befund. Freitext des Antragstellers
   (Name, Zweck, Schritt- und Prüfnamen, Rückweg-Einträge) geht nie mit eigener Zeile hinaus: jede
   Folgezeile trägt das Präfix `    | ` (alle Zeilenumbruch-Formen, auch U+2028/U+2029). Vorher konnte ein
   Rückweg-Text einen Abschnitt nachbauen, der vom echten nicht zu unterscheiden war, und so beliebigen
-  heruntergeladenen Code als „geprüft“ ausgeben. Befunde dürfen `F<n>:L<zeile>` als Beleg nennen. Dateien gehen ganz oder gar nicht
-  mit; was nicht ins Budget passt, heißt „content not shown … (unseen code)“ und macht die Prüfung
-  nicht unvollständig — dann urteilt der Türsteher wie bisher.
+  heruntergeladenen Code als „geprüft“ ausgeben. Der Paket-Abschnitt aus Forgejo (Abschnitt 2c)
+  trägt dieselbe Nonce (`## Package <nonce>`); ein anders genannter Paket-Abschnitt ist ebenso X6.
 - **Nicht der geprüfte Stand → Jochen:** weicht eine genannte Datei vom installierten Commit ab, ist
   der Baum schmutzig, hat keine Cockpit-Prüfung den Commit freigegeben oder ist die Datei nicht
   lesbar, endet der Job `blocked_user_approval` mit dem Grund — auch bei `pass` des Türstehers (wie der
@@ -279,6 +280,62 @@ ein Schritt etwas öffnet, bleibt das ein Türsteher-Befund X3 „Exposure“ (F
 Tests: `host-run.test.ts` (Policy je Klasse, mit Befund, unvollständig), `host-run-helper.test.ts`
 (Helfer 77 ohne / 0 mit Freigabe, `risk` fehlt → 64), `host-run-flow.test.ts` (API: `pass` plus
 `exposure` wartet auf Jochen, läuft nach der Freigabe mit `operatorApproved`).
+
+## 2c. Code-Paket aus Forgejo statt Code im Plan (19.11.2026, Karte t_d7d34cf5)
+
+Anlass: Der Einbau von `dienstwart` auf Lab0 (Jochen/lab0-infra PR 16) passte nicht in einen Plan.
+Der Planer nimmt höchstens 30 000 Zeichen; der Code kam deshalb in acht Stück-Jobs auf den Host
+(`/root/dienstwart-paket/.teile`), und der Einbau-Job d84ae668 rief `install.sh` auf, das nur noch per
+sha256 im Plan stand. Der Türsteher meldete zu Recht X5 („root runs an installer whose code is not in
+the plan“) und Jochen musste klicken. Jochen, 18.11.2026: „Wir könnten solche Sachen über ein Repo
+zur Verfügung stellen.“
+
+Der Weg: Das Manifest bekommt ein Feld `package` mit genau drei Angaben:
+
+```json
+"package": {"repo": "Jochen/lab0-infra", "commit": "<40 hex>", "files": [{"path": "dienstwart/install.sh", "sha256": "<64 hex>"}]}
+```
+
+- **Wer holt:** die Cockpit-API selbst, nicht der Besteller. Sie liest jede Datei über die Forgejo-API
+  (`/repos/<repo>/raw/<pfad>?ref=<commit>`) mit einem Lese-Token aus
+  `/etc/wireguard-ops-cockpit/forgejo.env` (`COCKPIT_FORGEJO_URL`, `COCKPIT_FORGEJO_TOKEN`,
+  `COCKPIT_FORGEJO_CA`, `COCKPIT_PACKAGE_OWNERS`; root-eigen 0600, von der API-Unit als optionales
+  EnvironmentFile gelesen, für die Agent-Units unsichtbar). Nur Repos der Besitzer in
+  `COCKPIT_PACKAGE_OWNERS`, nur diese eine Forgejo-Adresse, kein freier URL-Abruf.
+- **Was hart stoppt (unvollständiges Material, `blocked_prerequisite`, nichts läuft, keine Frage an
+  Jochen):** keine Paketquelle eingerichtet, Besitzer nicht erlaubt, Datei nicht lesbar, sha256
+  weicht ab, Datei kein UTF-8-Text oder mit einem Steuerzeichen außer Tab und LF (auch CR: bash endet
+  eine Zeile nur am LF, ein Leser, der das CR wegließe, sähe in `: \<CR><LF>` eine Fortsetzung und
+  hielte die nächste Zeile für harmlos — Zweitprüfung PR #120; der Helfer weist dasselbe ab), mehr
+  als 500 Kommentare am PR, Paket über 200 000 Bytes oder 64 Dateien, und
+  wie bisher: Prüfmaterial samt Paket über dem Prüffenster (90 000 Bytes). Das ist keine Textregel,
+  sondern Integrität: ohne die geprüften Bytes gibt es nichts zu beurteilen.
+- **Was der Türsteher sieht:** jede Datei ganz, Zeile für Zeile (`P1:L1` …), und die Herkunft als
+  Zeilen `P0:L…`, die die API selbst in Forgejo gelesen hat: ob der Commit der Merge-Commit eines
+  gemergten PR in den Standardzweig ist, dessen geprüfter Head, ob der Baum gleich ist, und die
+  Kommentare des PR. Seine Anweisung: Code aus `$COCKPIT_PACKAGE` ist gezeigter Code, kein
+  versteckter, und wird wie die Schritte beurteilt. Fehlt die Herkunft (kein gemergter PR in den
+  Standardzweig) oder ein Freigabe-Kommentar der Zweitprüfung zum gemergten Head, ist das ein
+  X5-Befund an der `P0`-Zeile — ob ein Kommentar eine Freigabe ist, entscheidet das Modell, kein
+  Textmuster. Ein Befund bleibt ein Befund und geht an Jochen.
+- **Was ausgeführt wird:** Vor dem Start holt die API das Paket erneut (die Freigabe kann Stunden
+  nach der Prüfung kommen) und reicht die Bytes über den Executor an `cockpit-host-run start`. Der
+  Helfer prüft jede Datei gegen die sha256 im signierten Manifest (fehlt eine, kommt eine dazu oder
+  weicht eine ab: Exit 77, kein Laufverzeichnis), legt sie root-eigen unter
+  `/var/lib/wireguard-ops-cockpit/host-runs/<job>/package/` ab (Verzeichnisse 0700, Dateien 0600),
+  prüft vor dem ersten Schritt (auch nach einem Neustart) noch einmal und gibt den Schritten und
+  Prüfungen `COCKPIT_PACKAGE` mit. Ein Schritt ruft also `bash "$COCKPIT_PACKAGE/dienstwart/install.sh" einrichten`.
+
+Was sich nicht ändert: Schloss (das Manifest samt Paketliste ist im `manifestHash`), Netz, Backup- und
+Risiko-Riegel. Ein neuer Lauscher bleibt `exposure` und damit Jochens Klick (2b). Der Planer muss das
+Paket nicht abschreiben: James schreibt das Manifest in den Intent (Abschnitt 5), der Planer-Vertrag
+bleibt unverändert (er ist schon so knapp an der 30 000-Zeichen-Grenze, dass jede Zeile dort einen Plan
+verdrängt).
+
+Ehrliche Grenzen: Der Freigabe-Kommentar im PR kann mit dem Token des Agenten geschrieben werden
+(wie der Marker der Zweitprüfung beim Selbstupdate); er ist ein öffentlicher Beleg zum Commit, kein
+zweiter Mensch. Die eigentliche Sicherung bleibt, dass der Türsteher jede Zeile liest. Ein Diff gegen
+den vorigen Stand zeigt die API nicht — sie zeigt immer die ganzen Dateien.
 
 ## 3. Tür
 
@@ -721,6 +778,12 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   Rücktest mit dem Manifest von Job 62c0fd6e — gleicher Stand wie die freigegebene `dienste.update`-
   Prüfung → `pass` startet den Lauf ohne Klick; abweichender Hash, schmutziger Baum, keine freigegebene
   Prüfung oder unlesbar → `blocked_user_approval` trotz `pass`.
+- `apps/api/test/host-run-package.test.ts` (Abschnitt 2c): Manifest-Feld `package`, Laden aus
+  Forgejo mit Attrappe (`test/fixtures/forgejo-package.ts`): sha256, fremder Besitzer, fehlende
+  Quelle, Binärdatei, ungemergter Commit als Herkunftszeile, Material mit `P`-Zeilen, belegte Befunde
+  auf Paket- und Herkunftszeilen. Im Helfer-Test (`describe("cockpit-host-run: package")`): Ablage
+  0700/0600, `$COCKPIT_PACKAGE` im Schritt, falsche sha256, fehlende/zusätzliche Datei, Pfad aus dem
+  Paketverzeichnis heraus.
 - `apps/api/test/host-run-flow.test.ts`: der Weg durch die API mit Brokern als Fakes — `pass`
   startet trotz `*.save`-Pfad und borg-Repair-Zeile (kein Regel-Stopp), ein belegter Befund geht
   an Jochen (`gatePassed` fehlt) und nach der Freigabe läuft genau dieser Plan (`operatorApproved`,

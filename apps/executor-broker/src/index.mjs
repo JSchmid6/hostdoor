@@ -77,6 +77,11 @@ export function validateRequest(value, now = Date.now()) {
   if (!reviewedUpdates.has(action) && value.payload.diffSha256 !== undefined) throw new Error("diffSha256 is only valid for self.update and dienste.update");
   if (action === "capability.execute" && (!value.payload.manifest || !value.payload.envelope)) throw new Error("dynamic capability payload is incomplete");
   if (action === "host.run" && (!value.payload.manifest || !value.payload.envelope || value.payload.manifest.version !== "cockpit-host-run/v1")) throw new Error("host run payload is incomplete");
+  // The package of a host run (doc/setup/host-run.md 2c): only its shape here;
+  // the helper checks every file against the sha256 of the signed manifest.
+  if (action === "host.run" && value.payload.package !== undefined && (!value.payload.package || !Array.isArray(value.payload.package.files) || value.payload.package.files.length > 64
+    || !value.payload.package.files.every((file) => file && typeof file.path === "string" && typeof file.content === "string"))) throw new Error("host run package is malformed");
+  if (action !== "host.run" && value.payload.package !== undefined) throw new Error("package is only valid for host.run");
   if (action === "host.status" && (typeof target !== "string" || !hostRunJobId.test(target))) throw new Error("host run job id is not valid");
   if (typeof envelopeDigest !== "string" || !/^[a-f0-9]{64}$/.test(envelopeDigest)) throw new Error("invalid envelope digest");
   if (typeof expiresAt !== "string" || now > Date.parse(expiresAt)) throw new Error("execution request expired");
@@ -97,7 +102,7 @@ export function execute(payload) {
         output: output.slice(-50000),
         error: code === 0 ? null : [error, output].filter(Boolean).join("\n").slice(-50000),
       }));
-      child.stdin.end(JSON.stringify({ manifest: payload.manifest, envelope: payload.envelope }));
+      child.stdin.end(JSON.stringify({ manifest: payload.manifest, envelope: payload.envelope, ...(payload.action === "host.run" && payload.package ? { package: payload.package } : {}) }));
       return;
     }
     if (payload.action === "host.status") {

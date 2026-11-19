@@ -189,6 +189,17 @@ test("executor broker admits the general host door with a host-run manifest and 
   assert.deepEqual(validateRequest({ payload: status, signature: sign(status) }, validAt), status);
 });
 
+test("executor broker passes a host run's package through (the helper checks the bytes)", () => {
+  const run = { ...hostBase, action: "host.run", manifest: { version: "cockpit-host-run/v1", steps: [{ name: "x", run: "true" }] }, envelope: { digest: "e".repeat(64) }, package: { files: [{ path: "tool/run.sh", content: "ZWNobyBoaQo=" }] } };
+  assert.deepEqual(validateRequest({ payload: run, signature: sign(run) }, validAt), run);
+  for (const pkg of [null, { files: "x" }, { files: [{ path: "a" }] }, { files: Array.from({ length: 65 }, () => ({ path: "a", content: "" })) }]) {
+    const bad = { ...run, package: pkg };
+    assert.throws(() => validateRequest({ payload: bad, signature: sign(bad) }, validAt), /host run package is malformed/);
+  }
+  const elsewhere = { ...hostBase, action: "host.status", target: "job-1", package: { files: [] } };
+  assert.throws(() => validateRequest({ payload: elsewhere, signature: sign(elsewhere) }, validAt), /package is only valid for host.run/);
+});
+
 test("executor broker rejects incomplete host runs and invalid job ids", () => {
   const rejected = [
     { action: "host.run", manifest: { version: "cockpit-capability/v1", steps: [] }, envelope: { digest: "e" } },
