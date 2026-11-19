@@ -240,7 +240,10 @@ Der Weg: Das Manifest bekommt ein Feld `package` mit genau drei Angaben:
   `COCKPIT_PACKAGE_OWNERS`, nur diese eine Forgejo-Adresse, kein freier URL-Abruf.
 - **Was hart stoppt (unvollständiges Material, `blocked_prerequisite`, nichts läuft, keine Frage an
   Jochen):** keine Paketquelle eingerichtet, Besitzer nicht erlaubt, Datei nicht lesbar, sha256
-  weicht ab, Datei kein UTF-8-Text oder mit NUL-Byte, Paket über 200 000 Bytes oder 64 Dateien, und
+  weicht ab, Datei kein UTF-8-Text oder mit einem Steuerzeichen außer Tab und LF (auch CR: bash endet
+  eine Zeile nur am LF, ein Leser, der das CR wegließe, sähe in `: \<CR><LF>` eine Fortsetzung und
+  hielte die nächste Zeile für harmlos — Zweitprüfung PR #120; der Helfer weist dasselbe ab), mehr
+  als 500 Kommentare am PR, Paket über 200 000 Bytes oder 64 Dateien, und
   wie bisher: Prüfmaterial samt Paket über dem Prüffenster (90 000 Bytes). Das ist keine Textregel,
   sondern Integrität: ohne die geprüften Bytes gibt es nichts zu beurteilen.
 - **Was der Türsteher sieht:** jede Datei ganz, Zeile für Zeile (`P1:L1` …), und die Herkunft als

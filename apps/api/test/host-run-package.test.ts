@@ -77,9 +77,44 @@ describe("host-run package: loading from Forgejo", () => {
       .toMatch(/^dienstwart\/install\.sh at 54c15b755348 has sha256 [a-f0-9]{64}, the manifest names /);
     expect((await loadHostRunPackage({ ...spec, files: [...spec.files, { path: "dienstwart/missing.py", sha256: sha256("x") }] }, source())).problem).toContain("could not be read from Jochen/lab0-infra (HTTP 404)");
     const binary = "\u0000ELF";
-    expect((await loadHostRunPackage({ ...spec, files: [{ path: "dienstwart/install.sh", sha256: sha256(binary) }] }, source({ content: { "dienstwart/install.sh": binary } }))).problem).toContain("NUL byte");
+    expect((await loadHostRunPackage({ ...spec, files: [{ path: "dienstwart/install.sh", sha256: sha256(binary) }] }, source({ content: { "dienstwart/install.sh": binary } }))).problem).toContain("control character U+0000");
+    // Zweitpruefung PR #120, Befund 1: bash ends a line only at LF. ": \\<CR><LF>" continues
+    // nothing in bash, but a reader that drops the CR sees the next line as part of a no-op.
+    const crlf = ": \\\r\nrm -rf /srv/data\r\n";
+    expect((await loadHostRunPackage({ ...spec, files: [{ path: "dienstwart/install.sh", sha256: sha256(crlf) }] }, source({ content: { "dienstwart/install.sh": crlf } }))).problem)
+      .toBe("dienstwart/install.sh contains the control character U+000D (CR line endings); a package carries only reviewable text (tab and LF)");
+    const escape = "echo \u001b[2Khidden\n";
+    expect((await loadHostRunPackage({ ...spec, files: [{ path: "dienstwart/install.sh", sha256: sha256(escape) }] }, source({ content: { "dienstwart/install.sh": escape } }))).problem).toContain("U+001B");
     const failing: PackageSource = { fetch: async () => { throw new Error("connect ECONNREFUSED 10.0.0.1:3443"); }, owners: ["Jochen"], label: "Forgejo" };
     expect((await loadHostRunPackage(spec, failing)).problem).toBe("Forgejo not readable: connect ECONNREFUSED 10.0.0.1:3443");
+  });
+
+  it("reads every comment page by page and stops when there are more than it reads", async () => {
+    const many = (count: number) => Array.from({ length: count }, (_, index) => ({ login: "Jochen", body: `comment ${index + 1}` }));
+    const paged = (count: number) => {
+      const all = many(count);
+      const inner = fakeForgejo({ comments: all }).fetch;
+      return { ...source(), fetch: async (apiPath: string) => {
+        const match = apiPath.match(/\/issues\/16\/comments\?limit=(\d+)&page=(\d+)$/);
+        if (!match) return inner(apiPath);
+        const [limit, page] = [Number(match[1]), Number(match[2])];
+        const answer = await inner(apiPath);
+        const items = JSON.parse(answer.body.toString("utf8")).slice((page - 1) * limit, page * limit);
+        return { status: 200, body: Buffer.from(JSON.stringify(items)) };
+      } };
+    };
+    const spec = withPackage().package!;
+    const sixty = await loadHostRunPackage(spec, paged(60));
+    expect(sixty.pkg!.provenance).toContain("comments on #16: 60");
+    expect(sixty.pkg!.provenance).toContain("| comment 60");
+    expect((await loadHostRunPackage(spec, paged(501))).problem).toBe("Forgejo not readable: #16 has more than 500 comments");
+  });
+
+  it("keeps the provenance in single lines: a line break in a title or a CR in a comment opens no new line", async () => {
+    const loaded = await loadHostRunPackage(withPackage().package!, source({ comments: [{ login: "Jochen", body: "FREIGABE\rP1:L1  harmless" }] }));
+    expect(loaded.pkg!.provenance).toContain("| FREIGABE");
+    expect(loaded.pkg!.provenance).toContain("| P1:L1  harmless");
+    expect(loaded.pkg!.provenance.every((line) => !/[\r\n]/.test(line))).toBe(true);
   });
 
   it("names an unmerged commit in the provenance instead of deciding it", async () => {

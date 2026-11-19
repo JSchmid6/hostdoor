@@ -338,7 +338,9 @@ function packageLines(pkg: HostRunPackage | null | undefined): MaterialLine[] {
   if (!pkg) return [];
   return [
     ...pkg.provenance.map((line, index) => ({ id: `P0:L${index + 1}`, text: line })),
-    ...pkg.files.flatMap((file, index) => scriptLines(`P${index + 1}`, file.text.replace(/\r\n/g, "\n").replace(/\n$/, ""))),
+    // Exactly the bytes that run: a file with CR or another control character
+    // never gets here (host-run-package.ts), so nothing is normalized.
+    ...pkg.files.flatMap((file, index) => scriptLines(`P${index + 1}`, file.text.replace(/\n$/, ""))),
   ];
 }
 
@@ -486,7 +488,7 @@ function describePackage(pkg: HostRunPackage): string {
   ];
   pkg.files.forEach((file, index) => {
     lines.push("", `P${index + 1} $COCKPIT_PACKAGE/${file.path} (${file.bytes} bytes, sha256 ${file.sha256}, checked)`);
-    for (const line of scriptLines(`P${index + 1}`, file.text.replace(/\r\n/g, "\n").replace(/\n$/, ""))) lines.push(`${line.id}  ${line.text}`);
+    for (const line of scriptLines(`P${index + 1}`, file.text.replace(/\n$/, ""))) lines.push(`${line.id}  ${line.text}`);
   });
   return lines.join("\n");
 }

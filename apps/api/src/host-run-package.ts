@@ -42,6 +42,10 @@ function field(value: unknown, ...keys: string[]): unknown {
 
 // ignoreBOM keeps a byte order mark in the text, so text and bytes stay one-to-one (the helper checks the sha256 of the re-encoded text).
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// The same set the root helper refuses (deploy/helpers/cockpit-host-run).
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/;
+const COMMENT_PAGE = 50;
+const COMMENT_PAGES = 10;
 
 export async function loadHostRunPackage(spec: HostRunPackageSpec, source: PackageSource): Promise<PackageLoad> {
   const owner = spec.repo.split("/")[0];
@@ -61,7 +65,11 @@ export async function loadHostRunPackage(spec: HostRunPackageSpec, source: Packa
       if (total > PACKAGE_MAX_BYTES) return { problem: `the package is larger than ${PACKAGE_MAX_BYTES} bytes` };
       let text: string;
       try { text = decoder.decode(response.body); } catch { return { problem: `${file.path} is not UTF-8 text; a package carries only reviewable text` }; }
-      if (text.includes("\0")) return { problem: `${file.path} contains a NUL byte; a package carries only reviewable text` };
+      // Zweitprüfung PR #120, Befund 1: bash ends a line only at LF, so a CR
+      // (": \\<CR><LF>" continues nothing) or another control character would make
+      // the reviewer read other lines than bash runs. Only tab and LF pass.
+      const control = text.match(CONTROL);
+      if (control) return { problem: `${file.path} contains the control character U+${control[0].charCodeAt(0).toString(16).padStart(4, "0").toUpperCase()}${control[0] === "\r" ? " (CR line endings)" : ""}; a package carries only reviewable text (tab and LF)` };
       files.push({ ...file, text, bytes: response.body.length });
     }
     return { pkg: { spec, files, provenance: await provenance(spec, repo, get, source.label) } };
@@ -88,21 +96,38 @@ async function provenance(spec: HostRunPackageSpec, repo: string, get: ForgejoFe
     lines.push("pull request: none — the commit is not the merge commit of a merged pull request");
     return lines;
   }
-  lines.push(`pull request: #${number} "${String(field(pr, "title") || "").slice(0, 160)}", merged into ${base}${base === defaultBranch ? " (the default branch)" : " — NOT the default branch"}, merge commit = this commit`);
+  lines.push(`pull request: #${number} "${oneLine(String(field(pr, "title") || "")).slice(0, 160)}", merged into ${base}${base === defaultBranch ? " (the default branch)" : " — NOT the default branch"}, merge commit = this commit`);
   lines.push(`reviewed head of #${number}: ${head || "(unreadable)"}`);
   const tree = async (sha: string) => String(field(json(await get(`${repo}/git/commits/${sha}`)), "commit", "tree", "sha") || "");
   const [mergeTree, headTree] = [await tree(spec.commit), head ? await tree(head) : ""];
   lines.push(mergeTree && mergeTree === headTree
     ? "tree of the commit: identical to the reviewed head"
     : "tree of the commit: differs from the reviewed head (the default branch had other changes merged in)");
-  const comments = await get(`${repo}/issues/${number}/comments?limit=50`);
-  const list = comments.status === 200 ? (() => { try { const value: unknown = JSON.parse(comments.body.toString("utf8")); return Array.isArray(value) ? value : []; } catch { return []; } })() : [];
-  lines.push(comments.status === 200 ? `comments on #${number}: ${list.length}` : `comments on #${number}: unreadable (HTTP ${comments.status})`);
+  // Every comment, page by page (Zweitprüfung PR #120, Befund 2: a later
+  // comment can withdraw an approval). More than the pages read, or a page that
+  // does not parse, is no provenance: the load stops as incomplete.
+  const list: unknown[] = [];
+  for (let page = 1; ; page += 1) {
+    const comments = await get(`${repo}/issues/${number}/comments?limit=${COMMENT_PAGE}&page=${page}`);
+    let items: unknown = null;
+    try { items = comments.status === 200 ? JSON.parse(comments.body.toString("utf8")) : null; } catch { items = null; }
+    if (!Array.isArray(items)) throw new Error(`the comments of #${number} are unreadable (HTTP ${comments.status})`);
+    list.push(...items);
+    if (items.length < COMMENT_PAGE) break;
+    if (page >= COMMENT_PAGES) throw new Error(`#${number} has more than ${COMMENT_PAGE * COMMENT_PAGES} comments`);
+  }
+  lines.push(`comments on #${number}: ${list.length}`);
   list.forEach((comment, index) => {
-    lines.push(`comment ${index + 1} by ${String(field(comment, "user", "login") || "?")} at ${String(field(comment, "created_at") || "?")}:`);
-    for (const line of String(field(comment, "body") || "").replace(/\r\n/g, "\n").split("\n")) lines.push(`| ${line}`);
+    lines.push(`comment ${index + 1} by ${oneLine(String(field(comment, "user", "login") || "?"))} at ${oneLine(String(field(comment, "created_at") || "?"))}:`);
+    for (const line of String(field(comment, "body") || "").replace(/\r\n?/g, "\n").split("\n")) lines.push(`| ${line.replace(CONTROL_ALL, " ")}`);
   });
   return lines;
+}
+
+// Provenance is data in single lines: no line break or control character in it.
+const CONTROL_ALL = /[\x00-\x1f\x7f\u2028\u2029]/g;
+function oneLine(value: string): string {
+  return value.replace(CONTROL_ALL, " ");
 }
 
 // The default reader: Forgejo's API over HTTPS with the operator's CA, a

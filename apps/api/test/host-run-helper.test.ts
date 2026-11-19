@@ -1378,6 +1378,15 @@ describe("cockpit-host-run: package", () => {
     expect(existsSync(path.join(dir, "runs", "job-1"))).toBe(false);
   });
 
+  it("refuses a file with CR line endings even when its sha256 is signed (Zweitpruefung PR #120)", () => {
+    const crlf = ": \\\r\necho escaped > /dev/null\r\n";
+    const m = { ...manifest({ steps: steps() }), package: pkg([{ path: "tool/run.sh", sha256: hash(crlf) }]) };
+    const out = run(["start"], packaged([{ path: "tool/run.sh", content: Buffer.from(crlf).toString("base64") }], m));
+    expect(out.code).toBe(77);
+    expect(out.stderr).toContain("package file tool/run.sh contains a control character; only tab and LF pass");
+    expect(existsSync(path.join(dir, "runs", "job-1"))).toBe(false);
+  });
+
   it("refuses a missing, an extra or an unannounced package", () => {
     const m = { ...manifest({ steps: steps() }), package: pkg() };
     const content = Buffer.from(script).toString("base64");

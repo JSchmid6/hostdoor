@@ -274,6 +274,9 @@ function packageContents(manifest, request) {
     if (total > PACKAGE_MAX_BYTES) fail(`the package is larger than ${PACKAGE_MAX_BYTES} bytes`, 77);
     const sha256 = createHash("sha256").update(content).digest("hex");
     if (sha256 !== file.sha256) fail(`package file ${file.path}: sha256 ${sha256} is not the reviewed ${file.sha256}`, 77);
+    // Wie die API (host-run-package.ts): nur Tab und LF; ein CR ließe den
+    // Türsteher andere Zeilen lesen, als bash ausführt (Zweitprüfung PR #120).
+    if (content.some((byte) => (byte < 0x20 && byte !== 0x09 && byte !== 0x0a) || byte === 0x7f)) fail(`package file ${file.path} contains a control character; only tab and LF pass`, 77);
     return { path: file.path, content };
   });
 }
