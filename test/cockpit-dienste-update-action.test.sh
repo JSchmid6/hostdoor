@@ -117,7 +117,27 @@ echo 'print("anders")' >> "$GITREPO/bin/werkzeug"
 check "show: geänderte Datei" 0 show bin/werkzeug
 expect "show: geändert ≠ HEAD" matchesHead false
 expect "show: Baum schmutzig" treeClean false
+expect "show: kein Inhalt geändert" contentBase64 ""
 git -C "$GITREPO" checkout -q -- bin/werkzeug
+# A tracked path hardlinked to a file outside the repository: its bytes are not
+# the blob, so no content (the old form showed the outside file).
+printf 'passwort: hunter2\n' > "$FIX/geheim"
+mv "$GITREPO/bin/werkzeug" "$FIX/werkzeug.orig" && ln "$FIX/geheim" "$GITREPO/bin/werkzeug"
+check "show: Hardlink nach außen" 0 show bin/werkzeug
+expect "show: Hardlink ≠ HEAD" matchesHead false
+expect "show: kein Inhalt Hardlink" contentBase64 ""
+rm "$GITREPO/bin/werkzeug" && mv "$FIX/werkzeug.orig" "$GITREPO/bin/werkzeug"
+# core.fsmonitor in the repository's own config is a command git would run as
+# root on status; the show path must not run it, nor refresh the index.
+printf '#!/bin/sh\ntouch %s\n' "$FIX/fsmonitor-lief" > "$FIX/fsmonitor.sh" && chmod 755 "$FIX/fsmonitor.sh"
+git -C "$GITREPO" config core.fsmonitor "$FIX/fsmonitor.sh"
+touch -d '2001-01-01' "$GITREPO/.git/index"; index_vorher="$(stat -c %Y "$GITREPO/.git/index")"
+touch "$GITREPO/bin/werkzeug"
+check "show: mit core.fsmonitor" 0 show bin/werkzeug
+expect "show: fsmonitor Baum sauber" treeClean true
+[ ! -e "$FIX/fsmonitor-lief" ] && echo "GRÜN show: core.fsmonitor nicht ausgeführt" || { echo "ROT  show: core.fsmonitor ausgeführt"; fails=$((fails + 1)); }
+[ "$(stat -c %Y "$GITREPO/.git/index")" = "$index_vorher" ] && echo "GRÜN show: Index unverändert" || { echo "ROT  show: Index aufgefrischt"; fails=$((fails + 1)); }
+git -C "$GITREPO" config --unset core.fsmonitor
 printf 'neu\n' > "$GITREPO/bin/unversioniert"
 check "show: unversionierte Datei" 0 show bin/unversioniert
 expect "show: unversioniert ≠ HEAD" matchesHead false

@@ -152,18 +152,37 @@ Seitdem liest das Cockpit diese Dateien selbst und legt sie dem Türsteher vor:
   `cockpit-dienste-update-action show <pfad>` als root, nur lesend: nur eine reguläre Datei unter dem
   Repo, kein Symlink auf dem Weg, keine Komponente mit Punkt am Anfang (kein `.git`, kein `..`); er
   liefert sha256, Größe, den installierten HEAD, ob die Datei Byte für Byte dem Blob in HEAD gleicht
-  und ob der versionierte Baum sauber ist, den Inhalt (höchstens 64 KiB, Schnitt gekennzeichnet) nur
-  für Dateien, die HEAD versioniert — der Helfer zeigt, was git ohnehin hält (wie `dienste.diff`).
+  und ob der versionierte Baum sauber ist. Den Inhalt (höchstens 64 KiB, Schnitt gekennzeichnet)
+  liefert er nur, wenn die Datei Byte für Byte dem Blob in HEAD gleicht, und dann aus dem Blob selbst
+  (`git cat-file blob`), nicht aus der Arbeitsdatei: der Helfer zeigt, was git ohnehin hält (wie
+  `dienste.diff`). Eine lokal geänderte oder unversionierte Datei, ein Hardlink nach außen oder ein
+  Symlink, der nach der Prüfung untergeschoben wird, liefert keinen fremden Inhalt. Alle git-Aufrufe
+  laufen ohne optionale Sperren (`GIT_OPTIONAL_LOCKS=0`), ohne `core.fsmonitor` und Untracked-Cache,
+  `status` mit `--ignore-submodules`: als root führt der Lesepfad kein Kommando aus der Repo-Konfiguration
+  aus und frischt den Index nicht auf (Zweitprüfung t_8884b442, H1/H2).
 - **Nachweis „geprüfter Stand“:** ein abgeschlossener Job des Cockpits selbst, dessen
   Vor-Installations-Prüfung dieses Repos (`output.updateReview`, `kind: dienste`) den installierten
   Commit gebunden hat und `pass` ergab oder von Jochen freigegeben wurde (`reviewedInstallJob`). Nur die
   eigene Job-Datenbank zählt — kein Marker, kein Kommentar, nichts, was der Antragsteller schreibt
-  (Lehre aus PR #74, Befund B1: ein Nachweis, den James selbst setzen kann, ist keiner).
-- **Türsteher:** der Abschnitt „Code from reviewed repositories“ steht im Material, jede Datei mit
-  Kennung `F<n>`, Stand und Zeilen `F<n>:L<zeile>`. Eine ganz gezeigte Datei zählt als im Plan
-  geschrieben: der Türsteher prüft sie wie Planzeilen (X1–X6 gelten), sie ist kein verborgener Code,
-  eine gezeigte Unit keine ungesehene Unit; Module, die sie aus demselben geprüften, sauberen Stand lädt,
-  ebenfalls nicht. Befunde dürfen `F<n>:L<zeile>` als Beleg nennen. Dateien gehen ganz oder gar nicht
+  (Lehre aus PR #74, Befund B1: ein Nachweis, den James selbst setzen kann, ist keiner). Eine
+  Installation über die Zweitprüfungs-Ausnahme (Ergebnis nicht `pass`, nur gemeldet, ohne Jochens
+  Freigabe) zählt nie als geprüft: jeder Host-Lauf mit Code aus diesem Stand hält dann bei Jochen
+  (schlägt sicher fehl, H4).
+- **Türsteher:** der Abschnitt „Code from reviewed repositories <nonce>“ steht im Material, jede Datei
+  mit Kennung `F<n>`, Stand und Zeilen `F<n>:L<zeile>`. Eine ganz gezeigte Datei zählt als im Plan
+  geschrieben: der Türsteher prüft sie wie Planzeilen (X1–X6 gelten), sie ist kein verborgener Code
+  (X5), eine gezeigte Unit keine ungesehene Unit (X2). Das ist ein gewollter neuer Durchlass: vorher
+  hielt solcher Code als X5 bei Jochen. Module, die sie aus demselben geprüften Stand lädt und die der
+  Commit versioniert, sind ebenfalls kein verborgener Code. Die Sauberkeitsprüfung sieht nur
+  versionierte Dateien (`--untracked-files=no`): eine unversionierte Datei daneben (Modul, gelesene
+  Konfiguration) bleibt ungesehener Code (H5).
+- **Fälschungssicher (Zweitprüfung t_8884b442, B1):** Die Kopfzeile des echten Abschnitts trägt die
+  Nonce der Prüfdaten-Marker (`BEGIN_REVIEW_DATA <nonce>`), die der Antragsteller nicht kennt. Nur dieser
+  Abschnitt zählt; jeder andere Text, der sich so nennt, ist ein X6-Befund. Freitext des Antragstellers
+  (Name, Zweck, Schritt- und Prüfnamen, Rückweg-Einträge) geht nie mit eigener Zeile hinaus: jede
+  Folgezeile trägt das Präfix `    | ` (alle Zeilenumbruch-Formen, auch U+2028/U+2029). Vorher konnte ein
+  Rückweg-Text einen Abschnitt nachbauen, der vom echten nicht zu unterscheiden war, und so beliebigen
+  heruntergeladenen Code als „geprüft“ ausgeben. Befunde dürfen `F<n>:L<zeile>` als Beleg nennen. Dateien gehen ganz oder gar nicht
   mit; was nicht ins Budget passt, heißt „content not shown … (unseen code)“ und macht die Prüfung
   nicht unvollständig — dann urteilt der Türsteher wie bisher.
 - **Nicht der geprüfte Stand → Jochen:** weicht eine genannte Datei vom installierten Commit ab, ist

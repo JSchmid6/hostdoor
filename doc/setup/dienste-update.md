@@ -41,8 +41,11 @@ read-only review input for the doorkeeper of the general host door
 regular file below the repository (no symlink on the way, no component that
 starts with a dot), with its sha256, the installed HEAD, whether it equals the
 blob of HEAD and whether the tracked tree is clean; the content (at most
-64 KiB, cut marked) only for a path HEAD tracks. It changes nothing and needs
-no network, so it reads in the helper's own context. The API counts the stand
+64 KiB, cut marked) only when the file equals that blob, read from the blob
+(`git cat-file blob`), not from the working file. git runs with
+`GIT_OPTIONAL_LOCKS=0`, `-c core.fsmonitor=false -c core.untrackedCache=false`
+and `status --ignore-submodules`. It changes nothing and needs no network, so
+it reads in the helper's own context. The API counts the stand
 as reviewed only when its own job store holds a finished `dienste.update` job
 whose review bound that commit and passed (or the operator approved it).
 
