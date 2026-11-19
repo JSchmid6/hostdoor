@@ -112,10 +112,17 @@ import {
   shellFenceManifest,
   parseHostRunReviewAnswer,
   parseHostRunStatus,
+  parseReviewedFileShow,
+  REVIEWED_REPOSITORIES,
+  MAX_REVIEWED_FILES,
+  reviewedFileFailure,
+  reviewedInstallJob,
+  reviewedRepositoryPaths,
   stateStepKinds,
   verifyHostRunFindings,
   type HostRunManifest,
   type HostRunReviewOutcome,
+  type ReviewedFile,
 } from "./host-run.js";
 import { forgejoApiFetch, loadHostRunPackage, type ForgejoFetch, type PackageSource } from "./host-run-package.js";
 
@@ -2242,6 +2249,30 @@ export async function createApp(options: AppOptions = {}) {
 
   // The reviewer prompt is kept next to the proposal (<jobId>-host-run-review.md,
   // 0600): exactly what the doorkeeper read.
+  // Files of reviewed repositories the plan names (card t_81392ccb): read on
+  // the host through the executor (dienste.show), each with the job of the
+  // Cockpit's own review that approved the installed commit, if any.
+  async function readReviewedFiles(jobId: string, manifest: HostRunManifest): Promise<ReviewedFile[]> {
+    const refs = reviewedRepositoryPaths(manifest);
+    const files: ReviewedFile[] = [];
+    for (const [index, ref] of refs.entries()) {
+      if (index >= MAX_REVIEWED_FILES) { files.push(reviewedFileFailure(ref, `more than ${MAX_REVIEWED_FILES} files named`, true)); continue; }
+      const repository = REVIEWED_REPOSITORIES.find((item) => item.root === ref.repository)!;
+      try {
+        if (!config.executorBrokerSocket || !config.executorBrokerSecret) throw new Error("typed executor broker is not configured");
+        const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+        const file = parseReviewedFileShow(await runExecutorAction(config.executorBrokerSocket, config.executorBrokerSecret, {
+          action: repository.showAction, target: ref.path, expiresAt, envelopeDigest: hashCanonical({ jobId, purpose: "host-run-reviewed-file", path: ref.path, expiresAt }),
+        }), ref);
+        if (file.head) file.reviewedBy = reviewedInstallJob(database.listCompletedJobsNaming("hermes-change", file.head), repository.kind, file.head);
+        files.push(file);
+      } catch (error) {
+        files.push(reviewedFileFailure(ref, error instanceof Error ? error.message : "read failed"));
+      }
+    }
+    return files;
+  }
+
   // The package source of the host door (doc/setup/host-run.md 2c): only the
   // configured Forgejo, only the configured owners, read by the Cockpit itself.
   const packageSource: PackageSource = {
@@ -2256,13 +2287,13 @@ export async function createApp(options: AppOptions = {}) {
       return { manifestHash: hostRunManifestHash(manifest), complete: false, missing: [`package: ${loaded.problem}`], focus: classifyHostRunFocus(manifest) };
     }
     const pkg = loaded?.pkg ?? null;
-    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, pkg });
-    const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus };
+    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, pkg, files: await readReviewedFiles(jobId, manifest) });
+    const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus, reviewedFiles: material.files };
     if (!material.complete) return outcome;
     outcome.reviewPath = path.join(proposalDir, `${jobId}-host-run-review.md`);
     await writeFile(outcome.reviewPath, material.prompt, { encoding: "utf-8", mode: 0o600 });
     try {
-      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest, pkg);
+      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest, pkg, material.files);
     } catch (error) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
     }

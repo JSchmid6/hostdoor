@@ -133,7 +133,7 @@ describe("host-run package: the doorkeeper's material", () => {
   it("shows every package line with its id, the provenance and where the files are staged", async () => {
     const { review } = await material();
     expect(review.complete).toBe(true);
-    expect(review.prompt).toContain("## Package (fetched by the Cockpit from Forgejo Jochen/lab0-infra at 54c15b755348702cac98d324035ab7b263ee7003; staged for the steps in $COCKPIT_PACKAGE");
+    expect(review.prompt).toContain("## Package n0 (fetched by the Cockpit from Forgejo Jochen/lab0-infra at 54c15b755348702cac98d324035ab7b263ee7003; staged for the steps in $COCKPIT_PACKAGE");
     expect(review.prompt).toContain("P0:L3  pull request: #16");
     expect(review.prompt).toContain("P1 $COCKPIT_PACKAGE/dienstwart/install.sh (47 bytes, sha256 ");
     expect(review.prompt).toContain("P1:L3  echo installing dienstwart");

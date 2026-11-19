@@ -147,6 +147,8 @@ test("executor broker admits the typed dienste-update actions with the same stri
     { action: "dienste.update", target: selfSha, diffSha256: reviewedHash },
     { action: "dienste.status", target: "state" },
     { action: "dienste.diff", target: selfSha },
+    { action: "dienste.show", target: "bin/ausgangs-sperre" },
+    { action: "dienste.show", target: "deploy/ausgangs-wache/ausgangs-sperre.service" },
   ]) {
     const payload = { ...selfBase, ...partial };
     assert.deepEqual(validateRequest({ payload, signature: sign(payload) }, validAt), payload);
@@ -160,6 +162,15 @@ test("executor broker admits the typed dienste-update actions with the same stri
     { action: "dienste.diff", target: selfSha, diffSha256: reviewedHash },
     { action: "dienste.status", target: "all" },
     { action: "dienste.restart", target: "state" },
+    { action: "dienste.show", target: "/etc/shadow" },
+    { action: "dienste.show", target: "../etc/shadow" },
+    { action: "dienste.show", target: ".git/config" },
+    { action: "dienste.show", target: "bin/.hidden" },
+    { action: "dienste.show", target: "bin/a b" },
+    { action: "dienste.show", target: "bin/x --force" },
+    { action: "dienste.show", target: "" },
+    { action: "dienste.show", target: "a/".repeat(9) + "b" },
+    { action: "dienste.show", target: "bin/werkzeug", diffSha256: reviewedHash },
   ];
   for (const partial of rejected) {
     const payload = { ...selfBase, ...partial };

@@ -6,6 +6,7 @@
 # Usage (exactly; no other arguments are accepted):
 #   cockpit-dienste-update-action status
 #   cockpit-dienste-update-action diff <commit-sha>
+#   cockpit-dienste-update-action show <path below the repository>
 #   cockpit-dienste-update-action <commit-sha> <diff-sha256>
 #     commit-sha: full lowercase 40-hex; diff-sha256: full lowercase 64-hex
 #
@@ -25,6 +26,18 @@
 #     origin/main, fast-forward from the installed stand, diff hash equals the
 #     reviewed one; it tests the new stand as nobody, then fast-forwards,
 #     restarts the supervisor and rolls back when its health check fails.
+#   * show <path> is read-only review input for the doorkeeper of the host door
+#     (doc/setup/host-run.md, "Code aus geprüften Repos"): it prints one file
+#     of the installed stand (at most SHOW_MAX bytes, base64, cut marked) with
+#     its sha256, the installed HEAD, whether the file is byte for byte the
+#     blob of HEAD and whether the tracked tree is clean; the content only
+#     when the file is byte for byte that blob, and then read from the blob
+#     itself (an untracked or locally changed file gets its hashes, no
+#     content: the form shows what git already holds). Only a regular file
+#     below the repository, no symlink on the way, no component that starts
+#     with a dot (no .git, no ..). It runs no network and changes nothing
+#     (git without optional locks, fsmonitor or untracked cache), so it reads
+#     in the helper's own context (git is local here).
 #   * Exit codes: 64 usage | 65 target rejected | 66 state | 67 environment |
 #     68 verification failed | 69 execution failed (the runner's own codes
 #     pass through).
@@ -41,6 +54,9 @@ readonly REPO_DIR="${COCKPIT_DIENSTE_REPO_DIR:-/opt/server-dienste}"
 readonly SYSTEMD_RUN="${COCKPIT_DIENSTE_SYSTEMD_RUN:-/usr/bin/systemd-run}"
 readonly PYTHON="${COCKPIT_DIENSTE_PYTHON:-/usr/bin/python3}"
 readonly RUNNER="$REPO_DIR/bin/uebernehmen"
+readonly GIT="${COCKPIT_DIENSTE_GIT:-/usr/bin/git}"
+readonly SHOW_MAX=65536
+readonly SHOW_PATH='^[A-Za-z0-9_][A-Za-z0-9_.+-]*(/[A-Za-z0-9_][A-Za-z0-9_.+-]*){0,7}$'
 
 ACTION="none"
 
@@ -81,6 +97,46 @@ run_runner() { # run_runner <runtime-max-sec> <args...>
     "$PYTHON" "$RUNNER" "$@"
 }
 
+# git in the show path changes nothing and runs no repository hook: no optional
+# index refresh (GIT_OPTIONAL_LOCKS=0), no core.fsmonitor command from
+# .git/config, no untracked cache (doc/setup/self-update.md, G4).
+show_git() { GIT_OPTIONAL_LOCKS=0 "$GIT" -C "$REPO_DIR" -c core.fsmonitor=false -c core.untrackedCache=false "$@"; }
+
+show_file() { # show_file <relative path>
+  local rel="$1" file real size head head_blob file_blob tree_clean=false matches=false truncated=false sha content
+  [ "${#rel}" -le 200 ] && [[ "$rel" =~ $SHOW_PATH ]] || fail 65 "path must be relative below the repository, without dot components"
+  check_owner
+  file="$REPO_DIR/$rel"
+  if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+    printf '{"ok":true,"action":"dienste.show","path":"%s","exists":false}\n' "$rel"
+    exit 0
+  fi
+  real="$(realpath -e -- "$file" 2>/dev/null)" || fail 65 "path does not resolve: $rel"
+  [ "$real" = "$(realpath -e -- "$REPO_DIR")/$rel" ] || fail 65 "symlink on the way: $rel"
+  [ -f "$real" ] || fail 65 "not a regular file: $rel"
+  size="$(stat -c %s -- "$real")"
+  sha="$(sha256sum -- "$real" | cut -d' ' -f1)"
+  head="$(show_git rev-parse --verify -q HEAD)" || fail 67 "no HEAD in $REPO_DIR"
+  head_blob="$(show_git rev-parse --verify -q "HEAD:$rel" 2>/dev/null || true)"
+  file_blob="$(show_git hash-object --no-filters -- "$real")" || fail 67 "git hash-object failed"
+  [ -n "$head_blob" ] && [ "$head_blob" = "$file_blob" ] && matches=true
+  [ -z "$(show_git status --porcelain=v1 --untracked-files=no --ignore-submodules 2>/dev/null || echo dirty)" ] && tree_clean=true
+  [ "$size" -gt "$SHOW_MAX" ] && truncated=true
+  # Content only for a file identical to the installed commit, and read from the
+  # git blob, not from the working file: the helper shows what git already holds
+  # (what dienste.diff shows), never an untracked or locally changed file, and a
+  # hardlink or a symlink swapped in after the checks above shows nothing else.
+  content=""
+  if [ "$matches" = true ]; then
+    # head closes the pipe early on a cut file (SIGPIPE under pipefail), so the
+    # length of what came out is the check instead of the pipe's status.
+    content="$(set +o pipefail; show_git cat-file blob "$head_blob" | head -c "$SHOW_MAX" | base64 -w0)"
+    [ "$(printf '%s' "$content" | base64 -d | wc -c)" -eq "$(( size < SHOW_MAX ? size : SHOW_MAX ))" ] || fail 67 "git cat-file failed: $rel"
+  fi
+  printf '{"ok":true,"action":"dienste.show","path":"%s","exists":true,"head":"%s","headBlob":"%s","fileBlob":"%s","matchesHead":%s,"treeClean":%s,"sha256":"%s","size":%s,"truncated":%s,"contentBase64":"%s"}\n' \
+    "$rel" "$head" "$head_blob" "$file_blob" "$matches" "$tree_clean" "$sha" "$size" "$truncated" "$content"
+}
+
 if [ "$#" -eq 1 ] && [ "$1" = "status" ]; then
   ACTION="dienste.status"
   run_runner 60 stand
@@ -88,6 +144,9 @@ elif [ "$#" -eq 2 ] && [ "$1" = "diff" ]; then
   ACTION="dienste.diff"
   [[ "$2" =~ ^[a-f0-9]{40}$ ]] || fail 65 "commit must be a full lowercase 40-hex sha"
   run_runner 420 diff "$2"
+elif [ "$#" -eq 2 ] && [ "$1" = "show" ]; then
+  ACTION="dienste.show"
+  show_file "$2"
 elif [ "$#" -eq 2 ]; then
   ACTION="dienste.update"
   [[ "$1" =~ ^[a-f0-9]{40}$ ]] || fail 65 "commit must be a full lowercase 40-hex sha"
@@ -99,5 +158,5 @@ elif [ "$#" -eq 1 ] && [[ "$1" =~ ^[a-f0-9]{40}$ ]]; then
   ACTION="dienste.update"
   fail 65 "an install needs the reviewed diff hash; run it as a Cockpit job"
 else
-  fail 64 "usage: cockpit-dienste-update-action status | diff <sha> | <sha> <diff-sha256>"
+  fail 64 "usage: cockpit-dienste-update-action status | diff <sha> | show <path> | <sha> <diff-sha256>"
 fi

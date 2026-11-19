@@ -33,6 +33,22 @@ machinery as the self-update, with the supervisor's own guarantees.
    reloads/restarts `hermes-supervisor` when the supervisor changed, and checks
    its socket. A failed check resets to the old stand.
 
+## Read form for the host door
+
+`cockpit-dienste-update-action show <path>` (executor action `dienste.show`) is
+read-only review input for the doorkeeper of the general host door
+(`doc/setup/host-run.md`, "Code aus geprüften Repos", card t_81392ccb): one
+regular file below the repository (no symlink on the way, no component that
+starts with a dot), with its sha256, the installed HEAD, whether it equals the
+blob of HEAD and whether the tracked tree is clean; the content (at most
+64 KiB, cut marked) only when the file equals that blob, read from the blob
+(`git cat-file blob`), not from the working file. git runs with
+`GIT_OPTIONAL_LOCKS=0`, `-c core.fsmonitor=false -c core.untrackedCache=false`
+and `status --ignore-submodules`. It changes nothing and needs no network, so
+it reads in the helper's own context. The API counts the stand
+as reviewed only when its own job store holds a finished `dienste.update` job
+whose review bound that commit and passed (or the operator approved it).
+
 ## Host installation
 
 ```bash
@@ -54,5 +70,5 @@ and history: `/var/lib/server-dienste/verlauf.jsonl`.
   never cross repositories, stop reasons naming the repository.
 - `apps/api/test/hermes-security.test.ts`: typed forms and classification.
 - `apps/executor-broker/test/index.test.mjs`: allowlisted actions and hash rule.
-- `sudo bash test/cockpit-dienste-update-action.test.sh`: helper form and owner check.
+- `sudo bash test/cockpit-dienste-update-action.test.sh`: helper form and owner check, `show <path>` against a real git repository.
 - server-dienste `tests/test_uebernehmen.py`: the runner against a real git fixture.
