@@ -40,6 +40,14 @@ export interface AppConfig {
   // der API-Unit als optionales EnvironmentFile gelesen). Sagt dem Türsteher,
   // auf welchem Host er steht; fehlt sie, gilt der strengste Text (VPS).
   instanceRole?: "vps" | "lab0" | "box" | null;
+  // Package source of the host door (card t_d7d34cf5, doc/setup/host-run.md 2c):
+  // the operator's Forgejo, read with a read-only token from forgejo.env (root-
+  // owned, read by the API unit as an optional EnvironmentFile). Without URL and
+  // token a plan with a package stops as incomplete review material.
+  forgejoUrl?: string | null;
+  forgejoToken?: string | null;
+  forgejoCaFile?: string | null;
+  packageOwners?: string[];
 }
 
 // A breaker limit from the environment: a positive whole number, else the
@@ -94,7 +102,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     executorBrokerSecret: env.COCKPIT_EXECUTOR_BROKER_SECRET?.trim() || null,
     nodeEnv,
     webUrl: env.COCKPIT_WEB_URL?.trim() || null,
-    instanceRole: instanceRoleOf(env.COCKPIT_INSTANCE_ROLE)
+    instanceRole: instanceRoleOf(env.COCKPIT_INSTANCE_ROLE),
+    forgejoUrl: env.COCKPIT_FORGEJO_URL?.trim() || null,
+    forgejoToken: env.COCKPIT_FORGEJO_TOKEN?.trim() || null,
+    forgejoCaFile: env.COCKPIT_FORGEJO_CA?.trim() || null,
+    packageOwners: (env.COCKPIT_PACKAGE_OWNERS || "").split(",").map((owner) => owner.trim()).filter(Boolean)
   };
 }
 

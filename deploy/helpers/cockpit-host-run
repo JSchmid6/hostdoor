@@ -64,8 +64,9 @@
 //              er meldet nur, was dpkg --audit sagt.
 //
 // Verben (gepinnte Grammatik; sudoers erlaubt nur `start` und `status *`):
-//   start             stdin: {"manifest", "envelope"} — prüfen, Laufverzeichnis
-//                     anlegen, Lauf-Unit starten (ohne Warten), sofort zurück
+//   start             stdin: {"manifest", "envelope", "package"?} — prüfen,
+//                     Laufverzeichnis anlegen, Paket ablegen, Lauf-Unit starten
+//                     (ohne Warten), sofort zurück
 //   status <jobId>    Zustand und Protokollauszug eines Laufs (JSON; logDigest)
 //   resume            nur aus wireguard-ops-cockpit-host-run-resume.service beim
 //                     Hochfahren: Läufe, die für einen Neustart angehalten haben,
@@ -138,6 +139,18 @@ const MAX_REBOOTS = 3;
 const MAX_SCRIPT = 16000;
 const STEP_TIMEOUT_MAX = 10800;
 const CHECK_TIMEOUT_MAX = 1800;
+// Paket eines Laufs (Karte t_d7d34cf5, doc/setup/host-run.md 2c): Code, der zu
+// groß für den Plan ist, aus einem eigenen Forgejo-Repo. Das Manifest nennt je
+// Datei Pfad und sha256 (signiert); die API holt die Dateien, der Türsteher
+// liest sie ganz. Hier wird jede Datei gegen ihre sha256 geprüft und root-eigen
+// unter <Laufverzeichnis>/package abgelegt; die Schritte sehen sie als
+// $COCKPIT_PACKAGE. Dieselben Grenzen wie in apps/api/src/host-run.ts.
+const PACKAGE_MAX_FILES = 64;
+const PACKAGE_MAX_BYTES = 200000;
+const PACKAGE_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const PACKAGE_PATH = /^(?!.*(?:^|\/)\.{1,2}(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,15}$/;
+// Zusätzliche Umgebung der Schritte und Prüfungen (nur COCKPIT_PACKAGE).
+const stepEnv = {};
 // Rückweg statt letzter Lauf (Jochen 28.10.2026, Karte t_30c9ea52): verlangt wird
 // das Archiv der letzten Nacht. 24 h Takt des Timers plus 6 h für dessen Streuung
 // und die Laufzeit (Start 00:07–02:26, Dauer bis ~1 h): der Ausfall einer Nacht
@@ -225,6 +238,69 @@ function validateManifest(manifest) {
   }
   if (!Array.isArray(manifest.rollback) || manifest.rollback.length < 1) bad("rollback");
   if (!Array.isArray(manifest.risk) || manifest.risk.length < 1 || !manifest.risk.every((risk) => typeof risk === "string")) bad("risk");
+  if (manifest.package !== undefined) {
+    const pkg = manifest.package;
+    if (!pkg || typeof pkg.repo !== "string" || !PACKAGE_REPO.test(pkg.repo) || typeof pkg.commit !== "string" || !/^[a-f0-9]{40}$/.test(pkg.commit)) bad("package");
+    if (!Array.isArray(pkg.files) || pkg.files.length < 1 || pkg.files.length > PACKAGE_MAX_FILES) bad("package files");
+    const paths = new Set();
+    for (const file of pkg.files) {
+      if (!file || typeof file.path !== "string" || file.path.length > 200 || !PACKAGE_PATH.test(file.path) || paths.has(file.path)) bad("package file path");
+      if (typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)) bad(`package sha256 of ${file.path}`);
+      paths.add(file.path);
+    }
+  }
+}
+
+// ── Paket ──────────────────────────────────────────────────────────────────
+// Genau die Dateien des signierten Manifests, jede mit ihrer sha256; keine
+// fehlt, keine kommt dazu. Erst alles prüfen, dann schreiben.
+function packageContents(manifest, request) {
+  const delivered = request?.package?.files;
+  if (!manifest.package) {
+    if (delivered !== undefined) fail("the request carries a package the manifest does not name", 77);
+    return null;
+  }
+  if (!Array.isArray(delivered) || delivered.length !== manifest.package.files.length) fail("the package does not match the manifest's file list", 77);
+  const byPath = new Map();
+  for (const file of delivered) {
+    if (!file || typeof file.path !== "string" || typeof file.content !== "string" || byPath.has(file.path)) fail("the package does not match the manifest's file list", 77);
+    byPath.set(file.path, Buffer.from(file.content, "base64"));
+  }
+  let total = 0;
+  return manifest.package.files.map((file) => {
+    const content = byPath.get(file.path);
+    if (!content) fail(`the package lacks ${file.path}`, 77);
+    total += content.length;
+    if (total > PACKAGE_MAX_BYTES) fail(`the package is larger than ${PACKAGE_MAX_BYTES} bytes`, 77);
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    if (sha256 !== file.sha256) fail(`package file ${file.path}: sha256 ${sha256} is not the reviewed ${file.sha256}`, 77);
+    return { path: file.path, content };
+  });
+}
+function packageDir(jobId) { return `${runDir(jobId)}/package`; }
+function stagePackage(jobId, files) {
+  const root = packageDir(jobId);
+  mkdirSync(root, { mode: 0o700 });
+  for (const file of files) {
+    const parts = file.path.split("/");
+    let dir = root;
+    for (const part of parts.slice(0, -1)) { dir = `${dir}/${part}`; if (!existsSync(dir)) mkdirSync(dir, { mode: 0o700 }); }
+    writeFileSync(`${root}/${file.path}`, file.content, { mode: 0o600, flag: "wx" });
+  }
+}
+// Vor dem ersten Schritt (auch nach einem Neustart) noch einmal: liegt genau
+// das geprüfte Paket da? Sonst läuft kein Schritt.
+function packageIntact(jobId, manifest) {
+  for (const file of manifest.package.files) {
+    const target = `${packageDir(jobId)}/${file.path}`;
+    let content;
+    try {
+      if (!lstatSync(target).isFile()) return `package file ${file.path} is not a regular file`;
+      content = readFileSync(target);
+    } catch { return `package file ${file.path} is missing`; }
+    if (createHash("sha256").update(content).digest("hex") !== file.sha256) return `package file ${file.path} changed after staging`;
+  }
+  return null;
 }
 
 // ── Schwärzen ──────────────────────────────────────────────────────────────
@@ -364,11 +440,12 @@ function withStartLock(action) {
 async function start() {
   const request = await readStdin();
   const { manifest, envelope } = verifyRequest(request, { checkExpiry: true });
+  const files = packageContents(manifest, request);
   mkdirSync(STATE_ROOT, { recursive: true, mode: 0o700 });
-  withStartLock(() => startLocked(manifest, envelope));
+  withStartLock(() => startLocked(manifest, envelope, files));
 }
 
-function startLocked(manifest, envelope) {
+function startLocked(manifest, envelope, files = null) {
   // Ein Lauf zur Zeit: zwei Root-Läufe, die gleichzeitig Pakete oder Dienste
   // anfassen, machen beide Ergebnisse unklar.
   for (const other of readdirSync(STATE_ROOT)) {
@@ -381,6 +458,7 @@ function startLocked(manifest, envelope) {
   const dir = runDir(envelope.jobId);
   mkdirSync(dir, { mode: 0o700 });
   writeJson(`${dir}/request.json`, { manifest, envelope });
+  if (files) stagePackage(envelope.jobId, files);
   const state = {
     version: 1, jobId: envelope.jobId, actorId: envelope.actorId, name: manifest.name, unit: unitName(envelope.jobId),
     mutates: manifest.mutates, phase: "preflight", status: "running", nextStep: 0, boots: [bootId()],
@@ -499,7 +577,7 @@ function runScript(script, timeoutSeconds, { uninterruptible = false, onOverrun 
   return new Promise((resolve) => {
     const child = spawn("/bin/bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
       cwd: "/", detached: true, stdio: ["ignore", "pipe", "pipe"],
-      env: { PATH: STEP_PATH, LANG: "C.UTF-8", HOME: "/root", DEBIAN_FRONTEND: "noninteractive", NEEDRESTART_MODE: "a" },
+      env: { PATH: STEP_PATH, LANG: "C.UTF-8", HOME: "/root", DEBIAN_FRONTEND: "noninteractive", NEEDRESTART_MODE: "a", ...stepEnv },
     });
     let timedOut = false;
     let overran = false;
@@ -918,6 +996,13 @@ async function payload(jobId) {
       const lock = dataLockHeld();
       if (!lock.ok) return finish(state, "failed", `${lock.why}; the run stops before step ${state.nextStep + 1}`);
     }
+  }
+
+  if (manifest.package) {
+    const broken = packageIntact(jobId, manifest);
+    if (broken) return finish(state, "failed", `${broken}; the run stops before step ${state.nextStep + 1}`);
+    stepEnv.COCKPIT_PACKAGE = packageDir(jobId);
+    log(`== package ${manifest.package.repo}@${manifest.package.commit.slice(0, 12)}: ${manifest.package.files.length} file(s) checked in $COCKPIT_PACKAGE`);
   }
 
   for (let index = state.nextStep; index < manifest.steps.length; index += 1) {
