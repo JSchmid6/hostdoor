@@ -165,7 +165,11 @@ geschwärzt, sie laufen ja nicht mehr) sowie jeden Job irgendeiner Tür, der auf
 kein anderes Fenster zeigt, offen oder schon geschlossen, unter welcher Karte, welchem Namen oder Zweck
 auch immer; ein NOTBETRIEB-Job zählt als Fenster. Ein Lauf, der ein offenes Fenster nur schließt,
 öffnet keins. Ein fehlender, nicht lesbarer oder fürs Budget gekürzter Verlauf zeigt nichts — dann ist
-(c) für einen öffnenden Lauf nicht belegbar, also Befund. Der Verlauf füllt nur den Platz, den der Plan
+(c) für einen öffnenden Lauf nicht belegbar, also Befund. Umgekehrt beweist ein leerer Verlauf nicht, dass
+kein Fenster offen ist (er kennt nur die Jobs des Cockpits): Den Abbruch bei offenem Fenster muss der Plan
+selbst zeigen; ein Lauf, der eine Rücknahme stoppt oder neu stellt oder einen vorgefundenen Drop-in
+überschreibt, bleibt Befund, was immer der Verlauf zeigt (Messlauf 4: flag-renewal ging mit leerem
+Verlauf durch, Messlauf 5 nach der Schärfung). Der Verlauf füllt nur den Platz, den der Plan
 lässt (erst alle Kopfzeilen, dann Schritte, jeweils neueste zuerst; was fehlt, steht als „omitted“ da)
 und macht das Material nie unvollständig; Befunde zitieren weiter nur Zeilen des Plans. Damit geht ein
 Rückfalltest je 24 Stunden ohne Klick; jeder weitere in dieser Zeit geht an Jochen. Gewählt statt eines
