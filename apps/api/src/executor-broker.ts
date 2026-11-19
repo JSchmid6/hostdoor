@@ -11,7 +11,8 @@ export interface ExecutorAction { action: ExecutorActionKind; target: string; di
 export interface DynamicExecutorAction { action: "capability.execute"; manifest: CapabilityManifest; envelope: ExecutionEnvelope; expiresAt: string; envelopeDigest: string }
 // The general host door: starts the signed run and returns at once; the run
 // itself lives in its own unit and is followed with host.status <jobId>.
-export interface HostRunExecutorAction { action: "host.run"; manifest: HostRunManifest; envelope: ExecutionEnvelope; expiresAt: string; envelopeDigest: string }
+// package: the files of the manifest's package (base64), fetched by the API; the helper checks each sha256 against the signed manifest.
+export interface HostRunExecutorAction { action: "host.run"; manifest: HostRunManifest; envelope: ExecutionEnvelope; expiresAt: string; envelopeDigest: string; package?: { files: Array<{ path: string; content: string }> } }
 export async function runExecutorAction(socketPath: string, secret: string, payload: ExecutorAction, timeoutMs = 60_000): Promise<string> {
   const signature = createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex");
   return await new Promise((resolve, reject) => {
