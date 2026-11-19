@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 
+import type { JobRecord } from "@wireguard-ops-cockpit/domain";
 import { describe, expect, it } from "vitest";
 
 import {
   buildHostRunReviewPrompt,
   HOST_RUN_REVIEW_INSTRUCTIONS,
   classifyHostRunFocus,
+  hostRunHistoryFromJobs,
   hostRunManifestHash,
   hostRunPlannerContract,
   hostRunPolicy,
@@ -17,10 +19,16 @@ import {
   parseHostRunReviewAnswer,
   parseHostRunStatus,
   verifyHostRunFindings,
+  type HostRunHistory,
   type HostRunManifest,
   type HostRunReviewOutcome,
 } from "../src/host-run.js";
 import { UPDATE_REVIEW_INSTRUCTIONS } from "../src/update-review-prompt.js";
+
+// The door's record of a measured case, shared with test/host-run-review-live.mjs.
+const { caseHistory } = await import("../../../test/host-run-history-fixture.mjs") as {
+  caseHistory: (item: unknown, cases: unknown[], parse: typeof parseHostRunManifest) => HostRunHistory;
+};
 
 // The 30.09.2026 case: package care stopped at the old sandbox because
 // /etc/apt holds sources.list.save and trusted.gpg~ (protected name patterns),
@@ -500,7 +508,7 @@ describe("host-run manifest from the trusted intent", () => {
 // wording and the cases; whether a model judges them right is measured with a
 // real run (test/host-run-review-live.mjs), not here.
 describe("doorkeeper X2 judged by effect", () => {
-  const cases = JSON.parse(readFileSync(new URL("./fixtures/host-run-review-cases.json", import.meta.url), "utf8")).cases as Array<{ id: string; expect: string; classes?: string[]; manifest: unknown }>;
+  const cases = JSON.parse(readFileSync(new URL("./fixtures/host-run-review-cases.json", import.meta.url), "utf8")).cases as Array<{ id: string; expect: string; classes?: string[]; manifest: unknown; history?: { runs: Array<Record<string, unknown>> } }>;
 
   it("asks the effect question and names all four conditions of the exception", () => {
     const x2 = HOST_RUN_REVIEW_INSTRUCTIONS.slice(HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X2 Authority"), HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X3 Exposure"));
@@ -525,6 +533,13 @@ describe("doorkeeper X2 judged by effect", () => {
     expect(x2).toContain("renewing or extending a window that is already open fails (c) as well");
     expect(x2).toContain("a step that stops, replaces or re-arms an earlier run's self-revert");
     expect(x2).toContain("a run that stops or re-arms an earlier run's self-revert");
+    // Second review R2 of 19.11.2026 (card t_f9c7dcec): a window opened again after the
+    // previous one closed is a chain too; the door's record shows it, and without a
+    // whole record (c) cannot be shown.
+    expect(x2).toContain("opening a window again after an earlier one closed is renewing it as well, however short the gap");
+    expect(x2).toContain("passes (c) only when that record shows no other window in those 24 hours, open or already closed, whatever card, name or purpose it carried");
+    expect(x2).toContain("a record that is missing, unavailable, incomplete or cut for the budget shows nothing");
+    expect(x2).toContain("so that the windows join into a chain");
   });
 
   it("keeps code, unit files, helpers, sudoers, secrets, persistence, redirects and widening as findings", () => {
@@ -542,23 +557,96 @@ describe("doorkeeper X2 judged by effect", () => {
   it("the pre-install review treats widening the X2 exception as narrowing G9", () => {
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Authority (X2) is judged by effect");
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert or the rule that renewing an open window is a finding");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("dropping the chain rule or the door's recent record from the doorkeeper's material");
   });
 
   it("every measured case is a valid manifest, and the Cockpit focus still points at the pass cases", () => {
     expect(cases.filter((item) => item.expect === "pass").map((item) => item.id)).toEqual(["pass-fallback-test-on", "pass-fallback-test-off"]);
-    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(13);
+    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(15);
     for (const item of cases) {
       const manifest = parseHostRunManifest(plan(item.manifest));
       expect(manifest, item.id).not.toBeNull();
-      expect(buildHostRunReviewPrompt(manifest!, { nonce: "n" }).complete, item.id).toBe(true);
+      expect(buildHostRunReviewPrompt(manifest!, { nonce: "n", history: caseHistory(item, cases, parseHostRunManifest) }).complete, item.id).toBe(true);
       if (item.expect === "pass") expect(classifyHostRunFocus(manifest!).map((focus) => focus.kind), item.id).toContain("cockpit");
     }
     // The on-run that may pass refuses to renew an open window; the renewal forms are flag cases.
     const on = cases.find((item) => item.id === "pass-fallback-test-on")!.manifest as { steps: Array<{ run: string }> };
-    expect(on.steps[0].run).toContain("fallback window already open: not renewed");
+    // Its guard is not bound to its own names (second review R2, H4): any runtime drop-in
+    // on the agent or runner unit, or any fallback revert timer, stops it.
+    expect(on.steps[0].run).toContain("systemctl show -p DropInPaths --value wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service");
+    expect(on.steps[0].run).toContain("'cockpit-rueckfalltest-revert-*'");
     expect(on.steps[0].run).not.toContain("systemctl stop cockpit-rueckfalltest-revert");
-    for (const id of ["flag-renewal", "flag-extend-window"]) {
+    for (const id of ["flag-renewal", "flag-extend-window", "flag-reopen-chain", "flag-other-card-over-open-window"]) {
       expect(cases.find((item) => item.id === id)?.expect, id).toBe("flag");
     }
+    // The chain case is the pass case itself; only the door's record differs.
+    const chain = cases.find((item) => item.id === "flag-reopen-chain")!;
+    expect(chain.manifest).toEqual(cases.find((item) => item.id === "pass-fallback-test-on")!.manifest);
+    expect(chain.history?.runs[0]).toMatchObject({ manifestFrom: "pass-fallback-test-on", finishedMinutesAgo: 40 });
+  });
+});
+
+// The door's recent record (second review R2 of 19.11.2026, card t_f9c7dcec):
+// the doorkeeper sees the runs of the last 24 h from the job table, so a chain
+// of windows is visible although each plan alone passes.
+describe("doorkeeper record of recent runs", () => {
+  const cases = JSON.parse(readFileSync(new URL("./fixtures/host-run-review-cases.json", import.meta.url), "utf8")).cases as Array<{ id: string; manifest: unknown }>;
+  const onManifest = cases.find((item) => item.id === "pass-fallback-test-on")!.manifest;
+  const now = new Date("2026-11-19T12:00:00.000Z");
+  const job = (id: string, output: Record<string, unknown> | null, extra: Partial<JobRecord> = {}): JobRecord => ({
+    id, sessionId: "s", kind: "runbook", subjectId: "hermes-change", status: "completed", requiresApproval: false, approvalId: null,
+    output, createdAt: "2026-11-19T11:19:00.000Z", updatedAt: "2026-11-19T11:20:00.000Z", completedAt: "2026-11-19T11:20:00.000Z", ...extra,
+  });
+
+  it("takes every run of this door and every NOTBETRIEB job from the job table, not the job under review", () => {
+    const history = hostRunHistoryFromJobs([
+      job("current", { hostRun: onManifest }),
+      job("on-1", { hostRun: onManifest, executionStartedAt: "2026-11-19T11:19:30.000Z", agentEngine: { doorkeeper: { name: "claude", model: "opus" } } }),
+      job("research", { agentEngine: { research: { name: "opencode", model: "deepseek", notbetrieb: true, reason: "ENOENT" } } }, { subjectId: "hermes-research" }),
+      job("garbled", { plan: "```host-run\n{not json\n```", safety: { details: { schemaVersion: "host-run-review/v1" } } }),
+      job("other-door", { plan: "## Plan\nread the logs" }),
+    ], "current", now);
+    expect(history.runs.map((run) => run.jobId)).toEqual(["on-1", "garbled"]);
+    expect(history.runs[0]).toMatchObject({ startedAt: "2026-11-19T11:19:30.000Z", finishedAt: "2026-11-19T11:20:00.000Z", engines: ["doorkeeper claude/opus"] });
+    expect(history.runs[0].manifest?.name).toBe("fallback-test-on-t_0cb8edbd");
+    expect(history.runs[1].manifest).toBeNull();
+    expect(history.notbetrieb).toEqual([{ jobId: "research", orderedAt: "2026-11-19T11:19:00.000Z", status: "completed", roles: ["research"] }]);
+  });
+
+  it("puts the record into the material with times, focus and steps, and names a cut or missing record", () => {
+    const manifest = parseHostRunManifest(plan(onManifest))!;
+    const history = hostRunHistoryFromJobs([job("on-1", { hostRun: onManifest })], "current", now);
+    const material = buildHostRunReviewPrompt(manifest, { nonce: "n", history });
+    expect(material.complete).toBe(true);
+    const record = material.prompt.slice(material.prompt.indexOf("## Recent record of this door"), material.prompt.indexOf("END_REVIEW_DATA n\n"));
+    expect(record).toContain("not from the requester; the last 24 h");
+    expect(record).toContain("Now: 2026-11-19T12:00:00.000Z");
+    expect(record).toContain("R1 job on-1: ordered 2026-11-19T11:19:00.000Z, started -, finished 2026-11-19T11:20:00.000Z, status completed");
+    expect(record).toContain("R1 name (requester's words): fallback-test-on-t_0cb8edbd");
+    expect(record).toMatch(/R1 name[^\n]*focus: [^\n]*cockpit S1:L/);
+    expect(record).toContain("R1.S1:L3  mkdir -p /run/systemd/system/wireguard-ops-cockpit-agent.service.d");
+    // The record is context: the plan's own line ids stay the only ones a finding may cite.
+    expect(material.lineIds.some((id) => id.startsWith("R"))).toBe(false);
+    // Inside the data markers, after the plan.
+    expect(material.prompt.indexOf("## Recent record of this door")).toBeGreaterThan(material.prompt.indexOf("## Rollback"));
+    expect(material.prompt.indexOf("## Recent record of this door")).toBeLessThan(material.prompt.indexOf("END_REVIEW_DATA n\n"));
+
+    // Many runs on a small budget: headers before steps, and what does not fit is named.
+    const many = hostRunHistoryFromJobs(Array.from({ length: 60 }, (_, index) => job(`run-${index}`, { hostRun: onManifest })), "current", now);
+    const bare = buildHostRunReviewPrompt(manifest, { nonce: "n" }).prompt.length;
+    const cut = buildHostRunReviewPrompt(manifest, { nonce: "n", history: many, limit: bare + 6000 });
+    expect(cut.complete).toBe(true);
+    expect(Buffer.byteLength(cut.prompt)).toBeLessThanOrEqual(bare + 6000);
+    expect(cut.prompt).toMatch(/\(\d+ older run\(s\) omitted for the review budget: this record is incomplete\)/);
+
+    expect(buildHostRunReviewPrompt(manifest, { nonce: "n" }).prompt).toContain("(record unavailable: none was supplied with this review)");
+    expect(buildHostRunReviewPrompt(manifest, { nonce: "n", history: { ...history, unavailable: "database is locked" } }).prompt).toContain("(record unavailable: database is locked)");
+  });
+
+  it("redacts secrets in the record's lines, which do not run now", () => {
+    const secretPlan = { ...(onManifest as Record<string, unknown>), steps: [{ name: "s", run: "echo ghp_0123456789abcdefghijklmnopqrstuvwxyzAB" }] };
+    const history = hostRunHistoryFromJobs([job("old", { hostRun: secretPlan })], "current", now);
+    const prompt = buildHostRunReviewPrompt(parseHostRunManifest(plan(onManifest))!, { nonce: "n", history }).prompt;
+    expect(prompt).not.toContain("ghp_0123456789abcdefghijklmnopqrstuvwxyzAB");
   });
 });
