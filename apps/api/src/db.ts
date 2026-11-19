@@ -738,6 +738,16 @@ export class CockpitDatabase {
     return rows.map((row) => this.mapJob(row));
   }
 
+  // Every job touched since a point in time, newest first, whatever its door:
+  // the doorkeeper's record of recent runs and NOTBETRIEB jobs (card t_f9c7dcec).
+  // No row limit: a flood of other jobs must not push a window out of the record.
+  listJobsUpdatedSince(sinceIso: string): JobRecord[] {
+    const rows = this.database
+      .prepare("SELECT * FROM jobs WHERE datetime(updated_at) >= datetime(?) ORDER BY datetime(created_at) DESC")
+      .all(sinceIso) as JobRow[];
+    return rows.map((row) => this.mapJob(row));
+  }
+
   listJobsForSession(sessionId: string): JobRecord[] {
     const rows = this.database
       .prepare("SELECT * FROM jobs WHERE session_id = ? ORDER BY datetime(created_at) DESC")

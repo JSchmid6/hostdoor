@@ -2,7 +2,7 @@
 // Measures the doorkeeper of the general host door with a real Claude run
 // (card t_befe7fc7). Each case in apps/api/test/fixtures/host-run-review-cases.json
 // goes the way of a job: parseHostRunManifest → buildHostRunReviewPrompt for the
-// instance role → the safety role's workspace AGENTS.md and claude arguments
+// instance role, with the case's door record (test/host-run-history-fixture.mjs) → the safety role's workspace AGENTS.md and claude arguments
 // from the agent broker → parseHostRunReviewAnswer, verifyHostRunFindings,
 // hostRunPolicy. It is not part of `npm test`: it costs a model run per case.
 //
@@ -24,6 +24,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hostRun = await import(path.join(root, "apps/api/dist/host-run.js"));
 const { redactSecrets } = await import(path.join(root, "apps/api/dist/update-review.js"));
 const broker = await import(path.join(root, "apps/agent-broker/src/index.mjs"));
+const { caseHistory } = await import(path.join(root, "test/host-run-history-fixture.mjs"));
 
 const args = process.argv.slice(2);
 const option = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -41,7 +42,7 @@ for (const item of cases) {
   const plan = `\`\`\`host-run\n${JSON.stringify(item.manifest)}\n\`\`\``;
   const manifest = hostRun.parseHostRunManifest(plan);
   if (!manifest) { results.push({ id: item.id, expect: item.expect, got: "invalid-manifest", ok: false }); continue; }
-  const material = hostRun.buildHostRunReviewPrompt(manifest, { role });
+  const material = hostRun.buildHostRunReviewPrompt(manifest, { role, history: caseHistory(item, fixture.cases, hostRun.parseHostRunManifest) });
   const workspace = broker.createSessionWorkspace({ requestId: randomUUID(), role: "safety" }, sessions);
   const stream = broker.claudeStream();
   const started = Date.now();

@@ -41,8 +41,9 @@ const NONCE = "feedfacecafebeef";
 // Was 16_000 bytes; the instructions grew with the box role in G5 (t_88f1e802), so the
 // room the tests rely on is kept, not the absolute number. 17_000 since the hint on
 // unchanged context in the instructions (t_7ea8785f). 18_100 since G9 names how X2 is
-// judged by effect (t_befe7fc7, +~1 kB).
-const SMALL_PASS = 18_100;
+// judged by effect (t_befe7fc7, +~1 kB). 18_600 since G9 names the chain rule and the
+// door's recent record (t_f9c7dcec, +~0.5 kB).
+const SMALL_PASS = 18_600;
 
 function section(path: string, lines: string[]): { path: string; text: string } {
   return { path, text: `${[`diff --git a/${path} b/${path}`, "--- a/" + path, "+++ b/" + path, ...lines].join("\n")}\n` };
@@ -179,10 +180,10 @@ describe("self-update pre-install review", () => {
     const path = "apps/api/src/hermes-security.ts";
     const hunk = (index: number) => [`@@ -${index * 100 + 1},40 +${index * 100 + 1},40 @@`, ...Array.from({ length: 40 }, (_, line) => `+h${index} l${line} ${"x".repeat(60)}`)];
     const big = section(path, Array.from({ length: 6 }, (_, index) => hunk(index)).flat());
-    // 23_400: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule).
-    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_400 });
+    // 23_900: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule, 23_900 since the chain rule, t_f9c7dcec).
+    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_900 });
     expect(prompts.length).toBeGreaterThan(1);
-    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_400)).toBe(true);
+    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_900)).toBe(true);
     expect(coverage[0]).toMatchObject({ incomplete: [], cut: [], omitted: [] });
     // Every hunk exactly once, whole, with the file header in every part.
     for (let index = 0; index < 6; index += 1) {

@@ -99,6 +99,8 @@ import {
 } from "./update-review.js";
 import {
   buildHostRunReviewPrompt,
+  HOST_RUN_HISTORY_HOURS,
+  hostRunHistoryFromJobs,
   hostRunManifestHash,
   hostRunPlannerContract,
   hostRunPolicy,
@@ -113,6 +115,7 @@ import {
   parseHostRunStatus,
   stateStepKinds,
   verifyHostRunFindings,
+  type HostRunHistory,
   type HostRunManifest,
   type HostRunReviewOutcome,
 } from "./host-run.js";
@@ -2238,7 +2241,7 @@ export async function createApp(options: AppOptions = {}) {
   // The reviewer prompt is kept next to the proposal (<jobId>-host-run-review.md,
   // 0600): exactly what the doorkeeper read.
   async function reviewHostRun(jobId: string, manifest: HostRunManifest, proposalDir: string): Promise<HostRunReviewOutcome> {
-    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null });
+    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, history: hostRunHistory(jobId) });
     const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus };
     if (!material.complete) return outcome;
     outcome.reviewPath = path.join(proposalDir, `${jobId}-host-run-review.md`);
@@ -2249,6 +2252,18 @@ export async function createApp(options: AppOptions = {}) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
     }
     return outcome;
+  }
+
+  // The door's recent record for the doorkeeper (X2 (c), card t_f9c7dcec): the
+  // job table of the last 24 h. A read error goes to the doorkeeper as an
+  // unavailable record, which shows no window; it never stops other runs.
+  function hostRunHistory(jobId: string): HostRunHistory {
+    const now = new Date();
+    try {
+      return hostRunHistoryFromJobs(database.listJobsUpdatedSince(new Date(now.getTime() - HOST_RUN_HISTORY_HOURS * 3_600_000).toISOString()), jobId, now);
+    } catch (error) {
+      return { now: now.toISOString(), hours: HOST_RUN_HISTORY_HOURS, runs: [], notbetrieb: [], unavailable: error instanceof Error ? error.message.slice(0, 200) : "read failed" };
+    }
   }
 
   function hostRunDeadline(manifest: HostRunManifest, startedAt: number): number {
