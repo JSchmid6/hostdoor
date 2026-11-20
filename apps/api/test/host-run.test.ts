@@ -683,6 +683,43 @@ describe("host door: code from reviewed repositories", () => {
     expect(reviewedFileStandIssue(reviewedFileFailure(ref, `more than ${MAX_REVIEWED_FILES} files named`, true))).toBeNull();
   });
 
+  // Merge of main into t_befe7fc7 (card t_8e0fab89): the door's record fills only
+  // the room that plan and reviewed files leave, and a record without room is named.
+  it("never lets the door's record displace a reviewed file, and names a record cut down to nothing", () => {
+    const ref = (path: string) => ({ repository: "/opt/server-dienste", path });
+    const small = { ...parseReviewedFileShow(showAnswer("deploy/x/werkzeug.service", "[Service]\nExecStart=/opt/server-dienste/bin/werkzeug"), ref("deploy/x/werkzeug.service")), reviewedBy: "job-1" };
+    const mid = { ...parseReviewedFileShow(showAnswer("bin/werkzeug", "y = 2\n".repeat(500)), ref("bin/werkzeug")), reviewedBy: "job-1" };
+    const history: HostRunHistory = {
+      now: "2026-11-20T12:00:00.000Z", hours: 24, notbetrieb: [],
+      runs: Array.from({ length: 40 }, (_, index) => ({ jobId: `run-${index}`, orderedAt: "2026-11-20T11:00:00.000Z", startedAt: null, finishedAt: null, status: "completed", engines: [], manifest })),
+    };
+    // Both files and the short "unavailable" record fit; the long record does not.
+    const withFiles = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], limit: 1_000_000 }).prompt;
+    const limit = Buffer.byteLength(withFiles);
+    const tight = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit });
+    expect(tight.complete).toBe(true);
+    expect(tight.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(tight.prompt)).toBeLessThanOrEqual(limit);
+    expect(tight.prompt).toContain("(record omitted: it does not fit the review budget; this record is incomplete)");
+    // No room at all for the record: the files still go along whole, and the fixed lines name the missing record.
+    const start = withFiles.indexOf("## Recent record of this door");
+    const record = withFiles.slice(start, withFiles.indexOf("\nEND_REVIEW_DATA n\n"));
+    const bare = limit - Buffer.byteLength(record) - 2;
+    const none = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit: bare });
+    expect(none.complete).toBe(true);
+    expect(none.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(none.prompt)).toBeLessThanOrEqual(bare);
+    expect(none.prompt).not.toContain("## Recent record of this door");
+    expect(none.prompt).toContain("Material without a section headed \"Recent record of this door\" had no room for that record: it was omitted for the review budget and is incomplete.");
+    // A larger budget: headers of the record next to both files, the rest named as omitted.
+    const some = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit: limit + 2_000 });
+    expect(some.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(some.prompt)).toBeLessThanOrEqual(limit + 2_000);
+    // The record stays inside its room, also with the lines that name omitted steps.
+    expect(some.prompt).toContain("R1 job run-0: ordered");
+    expect(some.prompt).toMatch(/\(\d+ older run\(s\) omitted for the review budget: this record is incomplete\)/);
+  });
+
   it("shows files whole within the budget; one that does not fit is named unseen, never makes the review incomplete, and its lines are no evidence", () => {
     const ref = (path: string) => ({ repository: "/opt/server-dienste", path });
     const small = { ...parseReviewedFileShow(showAnswer("deploy/x/werkzeug.service", "[Service]\nExecStart=/opt/server-dienste/bin/werkzeug"), ref("deploy/x/werkzeug.service")), reviewedBy: "job-1" };

@@ -805,10 +805,14 @@ function describeHistory(history: HostRunHistory | undefined, room: number): str
     : ["(none)"];
   const fixed = [title, `Now: ${history.now}`, "", "### Jobs of any door that ran on the fallback engine (NOTBETRIEB)", ...notbetrieb, "", "### Runs of this door"];
   let used = bytes(fixed.join("\n")) + 200;
+  // A header of a readable plan goes out with the line that its steps are
+  // omitted until they fit, so that line counts with the header.
+  const stepsOmitted = (index: number) => `R${index + 1} steps omitted for the review budget (the focus above covers the whole plan)`;
+  const omittedSize = (index: number) => history.runs[index].manifest ? bytes(stepsOmitted(index)) + 1 : 0;
   const headers: string[][] = [];
   for (const [index, run] of history.runs.entries()) {
     const header = historyRunHeader(run, index);
-    const size = bytes(header.join("\n")) + 1;
+    const size = bytes(header.join("\n")) + 1 + omittedSize(index);
     if (used + size > room) break;
     headers.push(header);
     used += size;
@@ -816,14 +820,15 @@ function describeHistory(history: HostRunHistory | undefined, room: number): str
   const steps: string[][] = headers.map(() => []);
   for (let index = 0; index < headers.length; index += 1) {
     const lines = historyRunSteps(history.runs[index], index);
-    const size = bytes(lines.join("\n")) + 1;
+    if (lines.length === 0) continue;
+    const size = bytes(lines.join("\n")) + 1 - omittedSize(index);
     if (used + size > room) break;
     steps[index] = lines;
     used += size;
   }
   const body = history.runs.length === 0 ? ["(none)"] : headers.flatMap((header, index) => [
     ...header,
-    ...(steps[index].length || !history.runs[index].manifest ? steps[index] : [`R${index + 1} steps omitted for the review budget (the focus above covers the whole plan)`]),
+    ...(steps[index].length || !history.runs[index].manifest ? steps[index] : [stepsOmitted(index)]),
   ]);
   const omitted = history.runs.length - headers.length;
   return [...fixed, ...body, ...(omitted > 0 ? [`(${omitted} older run(s) omitted for the review budget: this record is incomplete)`] : [])].join("\n");
