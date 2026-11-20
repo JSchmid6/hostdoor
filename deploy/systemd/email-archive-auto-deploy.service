@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/wireguard-ops-cockpit/email-archive-registry.env
+EnvironmentFile=/etc/wireguard-ops-cockpit/email-archive-forgejo-registry.env
 ExecStart=/usr/local/sbin/cockpit-email-archive-auto-deploy
 RuntimeDirectory=email-archive-auto-deploy
 StateDirectory=email-archive-auto-deploy

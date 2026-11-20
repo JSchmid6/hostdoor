@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -20,9 +21,12 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 APP_ID = "email_archive"
-SOURCE_REGISTRY = "registry.wejos.de"
-SOURCE_IMAGE = "registry.wejos.de/jochen/email-archive"
-SOURCE_REPOSITORY = "jochen/email-archive"
+# Quelle: Container-Registry der Forgejo-Instanz (Namensraum des Dienstkontos registry-bot, dort pusht die CI).
+# git.wejos.de löst auf dem Host über /etc/hosts auf 10.0.0.1 auf; die interne CA liegt neben der Zugangsdatei.
+SOURCE_REGISTRY = "git.wejos.de:3443"
+SOURCE_IMAGE = "git.wejos.de:3443/registry-bot/email-archive"
+SOURCE_REPOSITORY = "registry-bot/email-archive"
+SOURCE_CA = Path(os.environ.get("SOURCE_REGISTRY_CA", "/etc/wireguard-ops-cockpit/forgejo-ca.crt"))
 TARGET_IMAGE = "172.30.0.4:5000/jochen/email-archive"
 STATE_PATH = Path("/var/lib/email-archive-auto-deploy/state.json")
 LOCK_PATH = Path("/run/email-archive-auto-deploy/deploy.lock")
@@ -32,6 +36,10 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 IMAGE_ID_RE = re.compile(r"^sha256:([0-9a-f]{64})$")
 TAG_RE = re.compile(r"^(?:[0-9a-f]{40}|rollback-[0-9a-f]{64})$")
+
+
+def tls_context() -> ssl.SSLContext:
+    return ssl.create_default_context(cafile=str(SOURCE_CA))
 
 
 def fail(message: str) -> None:
@@ -72,7 +80,7 @@ class Registry:
             headers["Authorization"] = f"Bearer {self.token}"
         request = urllib.request.Request(f"https://{SOURCE_REGISTRY}{path}", headers=headers)
         try:
-            return urllib.request.urlopen(request, timeout=30)
+            return urllib.request.urlopen(request, timeout=30, context=tls_context())
         except urllib.error.HTTPError as error:
             if error.code != 401 or self.token:
                 raise
@@ -86,7 +94,7 @@ class Registry:
                 f"{fields['realm']}?{query}",
                 headers={"Authorization": f"Basic {auth}"},
             )
-            with urllib.request.urlopen(token_request, timeout=30) as response:
+            with urllib.request.urlopen(token_request, timeout=30, context=tls_context()) as response:
                 token_payload = json.load(response)
             self.token = token_payload.get("token") or token_payload.get("access_token")
             if not self.token:
