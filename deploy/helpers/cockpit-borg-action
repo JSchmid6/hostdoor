@@ -6,7 +6,7 @@
 #   cockpit-borg-action status     lesend: Zustand des Backups, beider Seiten
 #   cockpit-borg-action check      startet einen Repo-Check (lesend, mit --force)
 #   cockpit-borg-action repair     startet check --repair --force
-#   cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap
+#   cockpit-borg-action db-access status|check|ensure|adopt|restore|bootstrap|root-auth|root-socket
 #                                  DB-Zugang des Backups (mysqldump-Hook): nur aus
 #                                  einem Lauf der allgemeinen Tür (cockpit-host-run,
 #                                  geprüft an der cgroup), nie über sudo/Executor —
@@ -138,8 +138,10 @@ readonly BORG_ACTION_DB_GRANTS="SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, SHOW DA
 readonly DB_UNIT_FIXED="mariadb.service"
 readonly DB_INIT_GROUP_FIXED="mysql"
 readonly DB_INIT_BASE_FIXED="/run"
+# Version der Systemtabellen (mariadb-upgrade schreibt sie), nur für root-auth.
+readonly DB_UPGRADE_INFO_FIXED="/var/lib/mysql/mysql_upgrade_info"
 readonly HOST_RUN_CGROUP_RE='/cockpit-host-run-[A-Za-z0-9][A-Za-z0-9_.-]*\.service$'
-DB_CNF=""; DB_USER=""; NC_CONFIG=""; DB_UNIT=""; DB_INIT_GROUP=""; DB_INIT_BASE=""
+DB_CNF=""; DB_USER=""; NC_CONFIG=""; DB_UNIT=""; DB_INIT_GROUP=""; DB_INIT_BASE=""; DB_UPGRADE_INFO=""
 
 # Die Unit startet diesen Helfer erneut (`--payload <verb>`). Der Pfad muss dafür
 # absolut sein — systemd startet die Unit mit Arbeitsverzeichnis /.
@@ -162,7 +164,7 @@ cockpit-borg-action — Borg-Betrieb auf diesem Host.
            Freigabe des Operators in der Plan-Policy der Cockpit-API. Gleiche
            Frist- und Sperrprüfung wie check.
 
-  db-access status|check|ensure|adopt|restore|bootstrap
+  db-access status|check|ensure|adopt|restore|bootstrap|root-auth|root-socket
            DB-Zugang des Backups (die Optionsdatei des mysqldump-Hooks). Nur
            aus einem Lauf der allgemeinen Tür (cockpit-host-run), nie über den
            Executor. status: Konto und Anmeldung (ohne Werte); check: rc=0, wenn
@@ -174,7 +176,12 @@ cockpit-borg-action — Borg-Betrieb auf diesem Host.
            restore: die jüngste .vor-Datei zurück; bootstrap (Weg A, wenn
            kein Konto Konten anlegen darf): Datenbank EINMAL mit --init-file
            neu starten — legt das eigene Konto an, gibt root zusätzlich
-           unix_socket, tauscht die Datei wie ensure (kurzer DB-Ausfall).
+           unix_socket, tauscht die Datei wie ensure (kurzer DB-Ausfall);
+           root-auth (lesend): wie root sich anmeldet — je root@<host>
+           Plugin, Plugins aus auth_or, ob die bootstrap-Bedingung greift,
+           nie ein Hash; root-socket: nur root bekommt zusätzlich unix_socket
+           (root@localhost, sonst root@%), EIN Neustart mit --init-file
+           (kurzer DB-Ausfall), wenn bootstrap schon gelaufen ist.
 
   sources status|add <pfad>|add-large <pfad>|connect|disconnect|restore
            Zusätzliche Backup-Quellen (Musterdatei mit R-Zeilen, kein
@@ -789,6 +796,7 @@ readonly BORG_ACTION_INSTALLED="/usr/local/sbin/cockpit-borg-action"
 db_access_context() {
   DB_CNF="$DB_CNF_FIXED"; DB_USER="$DB_USER_FIXED"; NC_CONFIG="$NC_CONFIG_FIXED"
   DB_UNIT="$DB_UNIT_FIXED"; DB_INIT_GROUP="$DB_INIT_GROUP_FIXED"; DB_INIT_BASE="$DB_INIT_BASE_FIXED"
+  DB_UPGRADE_INFO="$DB_UPGRADE_INFO_FIXED"
   if [ "$BORG_ACTION_SELF" = "$BORG_ACTION_INSTALLED" ]; then
     grep -qE "$HOST_RUN_CGROUP_RE" /proc/self/cgroup 2>/dev/null
     return
@@ -798,6 +806,7 @@ db_access_context() {
   NC_CONFIG="${COCKPIT_BORG_ACTION_NC_CONFIG:-$NC_CONFIG_FIXED}"
   DB_INIT_GROUP="${COCKPIT_BORG_ACTION_DB_INIT_GROUP:-$DB_INIT_GROUP_FIXED}"
   DB_INIT_BASE="${COCKPIT_BORG_ACTION_DB_INIT_BASE:-$DB_INIT_BASE_FIXED}"
+  DB_UPGRADE_INFO="${COCKPIT_BORG_ACTION_DB_UPGRADE_INFO:-$DB_UPGRADE_INFO_FIXED}"
 }
 
 db_cnf_user() { # nur die user-Zeile, nie die Datei
@@ -1050,28 +1059,70 @@ db_restore() {
 # scheitern (Werkstatt-Probe 13.11.2026, MariaDB 10.11.14 wie der Host). Ein
 # SQL-Fehler darin hält den Start nicht auf, mariadbd bricht nur die Datei ab —
 # darum zählt am Ende allein, ob das neue Konto sich anmeldet und alles liest.
-db_init_sql() { # db_init_sql <hash>
-  local u="$DB_USER"
-  printf "CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY PASSWORD '%s';\n" "$u" "$1"
-  printf "ALTER USER '%s'@'localhost' IDENTIFIED BY PASSWORD '%s';\n" "$u" "$1"
-  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'localhost';\n" "$u"
-  printf "GRANT %s ON *.* TO '%s'@'localhost';\n" "$BORG_ACTION_DB_GRANTS" "$u"
+# Bedingung, unter der bootstrap/root-socket root zusätzlich unix_socket gibt (eine
+# Stelle für db_init_root_sql und den lesenden Befund db_root_auth).
+readonly DB_ROOT_SOCKET_COND="JSON_VALUE(Priv, '\$.plugin') IN ('mysql_native_password', 'ed25519') AND IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') <> '' AND IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1"
+# Welcher Eintrag von root eine Anmeldung über den Socket bekommt: root@localhost,
+# wenn es ihn gibt, sonst root@% (MariaDB nimmt den genauesten Host; der Socket
+# meldet sich als localhost). Auf dem VPS gibt es nur root@% (Host-Run bb97f8c3,
+# 17.11.2026, Karte t_f0718728) — darum griff die alte Bedingung auf localhost nie.
+readonly DB_ROOT_HOST_SQL="IF(EXISTS(SELECT 1 FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost'), 'localhost', '%')"
+db_init_root_sql() {
   # root: unix_socket ODER das bisherige Verfahren mit seinem bisherigen Hash — nur,
   # wenn root genau ein Verfahren hat (auth_or fehlt oder ist [{}], so speichert
   # MariaDB auch ein einzelnes `IDENTIFIED VIA … USING`) und es native/ed25519 mit
   # Hash ist. Sonst (anderes Plugin, schon Alternativen, root fehlt) DO 0: root
   # verliert nie etwas. Gelesen aus mysql.global_priv, weil die Sicht mysql.user nur
   # das erste Verfahren zeigt (Werkstatt-Probe 13.11.2026, alle vier Fälle).
+  # unix_socket wirkt nur über den Socket: über TCP bleibt root@% beim Passwort.
   printf '%s\n' \
-    "SET @cockpit_root = (SELECT IF(JSON_VALUE(Priv, '\$.plugin') IN ('mysql_native_password', 'ed25519') AND IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') <> '' AND IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0) <= 1, CONCAT('ALTER USER ''root''@''localhost'' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))), 'DO 0') FROM mysql.global_priv WHERE User = 'root' AND Host = 'localhost');" \
+    "SET @cockpit_root = (SELECT IF($DB_ROOT_SOCKET_COND, CONCAT('ALTER USER ''root''@', QUOTE(Host), ' IDENTIFIED VIA unix_socket OR ', JSON_VALUE(Priv, '\$.plugin'), ' USING ', QUOTE(JSON_VALUE(Priv, '\$.authentication_string'))), 'DO 0') FROM mysql.global_priv WHERE User = 'root' AND Host = $DB_ROOT_HOST_SQL);" \
     "SET @cockpit_root = IFNULL(@cockpit_root, 'DO 0');" \
     "PREPARE cockpit_root_stmt FROM @cockpit_root;" \
     "EXECUTE cockpit_root_stmt;" \
     "DEALLOCATE PREPARE cockpit_root_stmt;" \
     "SET @cockpit_root = NULL;"
 }
+db_init_sql() { # db_init_sql <hash>
+  local u="$DB_USER"
+  printf "CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY PASSWORD '%s';\n" "$u" "$1"
+  printf "ALTER USER '%s'@'localhost' IDENTIFIED BY PASSWORD '%s';\n" "$u" "$1"
+  printf "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '%s'@'localhost';\n" "$u"
+  printf "GRANT %s ON *.* TO '%s'@'localhost';\n" "$BORG_ACTION_DB_GRANTS" "$u"
+  db_init_root_sql
+}
 
 db_root_socket_state() { local out; if out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)"; then printf 'ok %s\n' "$out"; else db_error "$out"; fi; }
+
+# root-auth (lesend, Karte t_f0718728): wie meldet sich root an — für jeden Eintrag
+# root@<host> aus mysql.global_priv nur Plugin, ob ein Hash da ist (hash/invalid/
+# leer), die Plugins aus auth_or, ob gesperrt, und am Ziel-Eintrag (root@localhost,
+# sonst root@%) ob die bootstrap-Bedingung greift. Nie authentication_string selbst: die Abfrage wählt ihn nur als Vergleich.
+# Gelesen mit root per Socket, sonst mit dem Konto, das die Optionsdatei trägt
+# (cockpit_backup hat SELECT auf *.*, darin mysql.*); config.php nie (kein X1).
+db_root_auth() {
+  have mysql || die "mysql fehlt." 67
+  local via="root-socket" q out
+  if ! root_mysql -e 'SELECT 1' >/dev/null 2>&1; then
+    via="$(db_cnf_user "$DB_CNF") (Optionsdatei)"
+    [ -f "$DB_CNF" ] || die "root per Socket geht nicht und $DB_CNF fehlt — nichts lesbar." 1
+  fi
+  rq() { if [ "$via" = root-socket ]; then root_mysql -e "$1" 2>&1; else mysql --defaults-extra-file="$DB_CNF" -N -B -e "$1" 2>&1; fi; }
+  section "Anmeldung von root an der Datenbank (gelesen als $via)"
+  printf 'root per socket: %s\n' "$(db_root_socket_state)"
+  printf 'version: %s\n' "$(rq 'SELECT VERSION()' | head -n 1)"
+  printf 'mysql_upgrade_info: %s\n' "$( { head -c 80 "$DB_UPGRADE_INFO" 2>/dev/null || printf 'fehlt'; } | tr -cd '[:alnum:]._-')"
+  out="$(rq "SELECT PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'unix_socket'")" || out="$(db_error "$out")"
+  printf 'plugin unix_socket: %s\n' "${out:-nicht geladen}"
+  q="SELECT CONCAT_WS(' ', CONCAT(User, '@', Host), CONCAT('plugin=', IFNULL(JSON_VALUE(Priv, '\$.plugin'), '-')), CONCAT('hash=', CASE WHEN IFNULL(JSON_VALUE(Priv, '\$.authentication_string'), '') = '' THEN 'leer' WHEN JSON_VALUE(Priv, '\$.authentication_string') = 'invalid' THEN 'invalid' ELSE 'ja' END), CONCAT('auth_or=', IFNULL(JSON_LENGTH(Priv, '\$.auth_or'), 0), IFNULL(JSON_EXTRACT(Priv, '\$.auth_or[*].plugin'), '[]')), CONCAT('gesperrt=', IF(IFNULL(JSON_VALUE(Priv, '\$.account_locked'), 'false') IN ('true', '1'), 'ja', 'nein')), IF(Host = $DB_ROOT_HOST_SQL, CONCAT('bootstrap-bedingung=', IF(IFNULL($DB_ROOT_SOCKET_COND, 0), 'erfuellt', 'nicht-erfuellt')), NULL)) FROM mysql.global_priv WHERE User = 'root' ORDER BY Host"
+  if ! out="$(rq "$q")"; then
+    printf 'mysql.global_priv: %s\n' "$(db_error "$out")"
+    return 1
+  fi
+  # Nur Namen, Plugins, Zahlen und die festen Wörter oben; begrenzt.
+  printf '%s\n' "${out:-kein Eintrag root@…}" | head -n 20 | tr -cd '[:alnum:]_@%.:,=\[\]" \n-'
+  return 0
+}
 
 DB_INIT_DIR=""; DB_INIT_OPTS_SET=""
 db_manager_has_opts() { local e; e="$(systemctl show-environment 2>/dev/null || true)"; grep -q '^MYSQLD_OPTS=' <<<"$e"; }
@@ -1086,6 +1137,70 @@ db_init_cleanup() { # idempotent: Umgebung des Managers zurück, Init-Datei weg;
   fi
   if [ -n "$DB_INIT_DIR" ]; then rm -f -- "$DB_INIT_DIR/init.sql"; rmdir -- "$DB_INIT_DIR" 2>/dev/null || true; DB_INIT_DIR=""; fi
   return "$rc"
+}
+
+# Vorbedingung jedes Starts mit --init-file: ein fremdes MYSQLD_OPTS nie
+# überschreiben (rc=67, nichts verändert).
+db_init_guard() {
+  # Ein fremdes MYSQLD_OPTS (Manager oder Drop-in) nie überschreiben: im Drop-in
+  # gewönne es ohnehin gegen set-environment, die Init-Datei käme nicht an.
+  # Erst lesen, dann suchen: `systemctl … | grep -q` gäbe unter pipefail bei
+  # einem frühen Treffer SIGPIPE und damit „kein Treffer“.
+  local uenv envf envrest
+  uenv="$(systemctl show -p Environment --value "$DB_UNIT" 2>/dev/null || true)"
+  if db_manager_has_opts; then
+    die "im systemd-Manager ist MYSQLD_OPTS schon gesetzt — nicht überschrieben; nichts verändert." 67
+  fi
+  if grep -q 'MYSQLD_OPTS=' <<<"$uenv"; then
+    die "$DB_UNIT setzt MYSQLD_OPTS selbst (Drop-in) — die Init-Datei käme nicht an; nichts verändert." 67
+  fi
+  # EnvironmentFile= zeigt `show -p Environment` nicht (Zweitprüfung PR #105):
+  # jede genannte Datei, die MYSQLD_OPTS setzt oder nicht lesbar ist, hält an.
+  # Eine fehlende Datei mit ignore_errors=yes (EnvironmentFile=-…) setzt nichts.
+  while read -r envf envrest; do
+    [ -n "$envf" ] || continue
+    envf="${envf#-}"
+    if [ ! -e "$envf" ] && [[ "$envrest" == *ignore_errors=yes* ]]; then continue; fi
+    if [ ! -r "$envf" ] || grep -qE '^[[:space:]]*(export[[:space:]]+)?MYSQLD_OPTS=' "$envf"; then
+      die "$DB_UNIT liest $envf (EnvironmentFile), das MYSQLD_OPTS setzt oder nicht lesbar ist — die Init-Datei käme womöglich nicht an; nichts verändert." 67
+    fi
+  done < <(systemctl show -p EnvironmentFiles --value "$DB_UNIT" 2>/dev/null || true)
+}
+
+# db_init_restart <sql>: startet $DB_UNIT EINMAL mit --init-file (Inhalt <sql>) neu.
+# rc=0: die Datenbank läuft, Datei gelöscht, MYSQLD_OPTS zurückgenommen. Sonst rc=1,
+# DB_INIT_FAIL nennt den Grund (samt "$DB_CNF unverändert") — der Aufrufer räumt
+# seine Arbeitsdateien und bricht mit die ab. Kam die Datenbank mit der Datei nicht
+# hoch, ist sie schon normal (ohne Datei) neu gestartet; steht MYSQLD_OPTS noch im
+# Manager, gibt es keinen Rückweg-Neustart (er scheiterte an der gelöschten Datei).
+DB_INIT_FAIL=""
+db_init_restart() {
+  DB_INIT_FAIL=""
+  trap 'db_init_cleanup' EXIT
+  DB_INIT_DIR="$(mktemp -d "$DB_INIT_BASE/cockpit-db-init.XXXXXX")" || { DB_INIT_DIR=""; DB_INIT_FAIL="kein Verzeichnis für die Init-Datei — nichts verändert."; return 1; }
+  local initf="$DB_INIT_DIR/init.sql"
+  if ! { chgrp "$DB_INIT_GROUP" "$DB_INIT_DIR" && chmod 750 "$DB_INIT_DIR" \
+      && install -m 640 -o root -g "$DB_INIT_GROUP" /dev/null "$initf" && printf '%s\n' "$1" > "$initf"; }; then
+    db_init_cleanup; DB_INIT_FAIL="Init-Datei nicht angelegt — nichts verändert."; return 1
+  fi
+  DB_INIT_OPTS_SET=1 # vorher: auch ein set-environment mit Fehler, das doch gesetzt hat, wird zurückgenommen
+  systemctl set-environment "MYSQLD_OPTS=--init-file=$initf" || { db_init_cleanup; DB_INIT_FAIL="MYSQLD_OPTS nicht gesetzt — nichts verändert."; return 1; }
+
+  section "Neustart von $DB_UNIT mit --init-file"
+  local t0 rc=0
+  t0="$(date +%s)"
+  systemctl restart "$DB_UNIT" || rc=$?
+  if ! db_init_cleanup; then
+    DB_INIT_FAIL="MYSQLD_OPTS ließ sich nicht zurücknehmen (Neustart rc=$rc, $DB_UNIT: $(systemctl is-active "$DB_UNIT" 2>&1)) — $DB_CNF unverändert."
+    return 1
+  fi
+  printf 'neustart: rc=%s nach %s s; init-datei gelöscht, MYSQLD_OPTS zurückgenommen\n' "$rc" "$(( $(date +%s) - t0 ))"
+  if [ "$rc" -ne 0 ] || ! systemctl is-active --quiet "$DB_UNIT"; then
+    # Rückweg: normal starten (ohne Init-Datei), wie vor diesem Aufruf.
+    systemctl restart "$DB_UNIT" >/dev/null 2>&1 || true
+    DB_INIT_FAIL="$DB_UNIT kam mit der Init-Datei nicht hoch (rc=$rc); normal neu gestartet: $(systemctl is-active "$DB_UNIT" 2>&1) — $DB_CNF unverändert (journalctl -u $DB_UNIT)."
+    return 1
+  fi
 }
 
 db_bootstrap() {
@@ -1108,30 +1223,7 @@ db_bootstrap() {
     return 0
   fi
   rm -f "$err"
-  # Ein fremdes MYSQLD_OPTS (Manager oder Drop-in) nie überschreiben: im Drop-in
-  # gewönne es ohnehin gegen set-environment, die Init-Datei käme nicht an.
-  # Erst lesen, dann suchen: `systemctl … | grep -q` gäbe unter pipefail bei
-  # einem frühen Treffer SIGPIPE und damit „kein Treffer“.
-  local uenv envf
-  uenv="$(systemctl show -p Environment --value "$DB_UNIT" 2>/dev/null || true)"
-  if db_manager_has_opts; then
-    die "im systemd-Manager ist MYSQLD_OPTS schon gesetzt — nicht überschrieben; nichts verändert." 67
-  fi
-  if grep -q 'MYSQLD_OPTS=' <<<"$uenv"; then
-    die "$DB_UNIT setzt MYSQLD_OPTS selbst (Drop-in) — die Init-Datei käme nicht an; nichts verändert." 67
-  fi
-  # EnvironmentFile= zeigt `show -p Environment` nicht (Zweitprüfung PR #105):
-  # jede genannte Datei, die MYSQLD_OPTS setzt oder nicht lesbar ist, hält an.
-  # Eine fehlende Datei mit ignore_errors=yes (EnvironmentFile=-…) setzt nichts.
-  local envrest
-  while read -r envf envrest; do
-    [ -n "$envf" ] || continue
-    envf="${envf#-}"
-    if [ ! -e "$envf" ] && [[ "$envrest" == *ignore_errors=yes* ]]; then continue; fi
-    if [ ! -r "$envf" ] || grep -qE '^[[:space:]]*(export[[:space:]]+)?MYSQLD_OPTS=' "$envf"; then
-      die "$DB_UNIT liest $envf (EnvironmentFile), das MYSQLD_OPTS setzt oder nicht lesbar ist — die Init-Datei käme womöglich nicht an; nichts verändert." 67
-    fi
-  done < <(systemctl show -p EnvironmentFiles --value "$DB_UNIT" 2>/dev/null || true)
+  db_init_guard
 
   # Zufallspasswort und Hash wie ensure; der Klartext geht nur in die Arbeitsdatei.
   local pw hash tmp
@@ -1144,32 +1236,7 @@ db_bootstrap() {
   { printf '[client]\nuser=%s\npassword="%s"\n' "$u" "$pw"; grep -vE '^[[:space:]]*(user|password)[[:space:]]*=' "$DB_CNF" || true; } > "$tmp"
   unset pw
 
-  trap 'db_init_cleanup' EXIT
-  DB_INIT_DIR="$(mktemp -d "$DB_INIT_BASE/cockpit-db-init.XXXXXX")" || { DB_INIT_DIR=""; rm -f "$tmp"; die "kein Verzeichnis für die Init-Datei — nichts verändert." 1; }
-  local initf="$DB_INIT_DIR/init.sql"
-  if ! { chgrp "$DB_INIT_GROUP" "$DB_INIT_DIR" && chmod 750 "$DB_INIT_DIR" \
-      && install -m 640 -o root -g "$DB_INIT_GROUP" /dev/null "$initf" && db_init_sql "$hash" > "$initf"; }; then
-    rm -f "$tmp"; db_init_cleanup; die "Init-Datei nicht angelegt — nichts verändert." 1
-  fi
-  DB_INIT_OPTS_SET=1 # vorher: auch ein set-environment mit Fehler, das doch gesetzt hat, wird zurückgenommen
-  systemctl set-environment "MYSQLD_OPTS=--init-file=$initf" || { rm -f "$tmp"; db_init_cleanup; die "MYSQLD_OPTS nicht gesetzt — nichts verändert." 1; }
-
-  section "Neustart von $DB_UNIT mit --init-file"
-  local t0 rc=0
-  t0="$(date +%s)"
-  systemctl restart "$DB_UNIT" || rc=$?
-  if ! db_init_cleanup; then
-    # Kein Rückweg-Neustart: mit dem stehengebliebenen --init-file käme die Datenbank nicht hoch.
-    rm -f "$tmp"
-    die "MYSQLD_OPTS ließ sich nicht zurücknehmen (Neustart rc=$rc, $DB_UNIT: $(systemctl is-active "$DB_UNIT" 2>&1)) — $DB_CNF unverändert." 1
-  fi
-  printf 'neustart: rc=%s nach %s s; init-datei gelöscht, MYSQLD_OPTS zurückgenommen\n' "$rc" "$(( $(date +%s) - t0 ))"
-  if [ "$rc" -ne 0 ] || ! systemctl is-active --quiet "$DB_UNIT"; then
-    # Rückweg: normal starten (ohne Init-Datei), wie vor diesem Aufruf.
-    systemctl restart "$DB_UNIT" >/dev/null 2>&1 || true
-    rm -f "$tmp"
-    die "$DB_UNIT kam mit der Init-Datei nicht hoch (rc=$rc); normal neu gestartet: $(systemctl is-active "$DB_UNIT" 2>&1) — $DB_CNF unverändert (journalctl -u $DB_UNIT)." 1
-  fi
+  db_init_restart "$(db_init_sql "$hash")" || { rm -f "$tmp"; die "$DB_INIT_FAIL" 1; }
 
   err="$(mktemp)"
   if ! db_login "$tmp" >/dev/null || ! db_dump_ok "$tmp" "$err"; then
@@ -1195,6 +1262,51 @@ db_bootstrap() {
   printf 'anmeldung: %s\n' "$(db_login "$DB_CNF" || true)"
   printf 'datenbanken: %s\n' "$(mysql --defaults-extra-file="$DB_CNF" -N -B -e 'SHOW DATABASES' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
   printf 'root per socket: %s\n' "$(db_root_socket_state)"
+  printf 'datenbank: %s\n' "$(systemctl is-active "$DB_UNIT" 2>&1)"
+}
+
+
+# root-socket (Karte t_f0718728): nur root bekommt zusätzlich unix_socket — für den
+# Fall, dass bootstrap schon gelaufen ist (die Datei trägt cockpit_backup, bootstrap
+# startet dann nicht mehr neu), root aber noch kein unix_socket hat (VPS: nur
+# root@%, die alte Bedingung sah nur root@localhost). EIN Neustart mit --init-file;
+# die Datei enthält nur db_init_root_sql (kein Konto, kein Hash von uns). Vorher
+# liest er mit dem Konto der Optionsdatei (cockpit_backup, SELECT auf mysql.*), ob
+# die Bedingung am Ziel-Eintrag greift — sonst kein Neustart (rc=67): ein Neustart,
+# der root ohnehin nichts gäbe, wäre nur ein DB-Ausfall.
+db_root_socket() {
+  borgmatic_here || die "borgmatic (und $BORG_ACTION_CONFIG) fehlen auf diesem Host — der DB-Zugang des Backups gehört zum VPS." 67
+  local tool state out target
+  for tool in mysql systemctl mktemp getent install; do have "$tool" || die "$tool fehlt — nichts verändert." 67; done
+  getent group "$DB_INIT_GROUP" >/dev/null || die "Gruppe $DB_INIT_GROUP fehlt — mariadbd könnte die Init-Datei nicht lesen; nichts verändert." 67
+  db_lock
+  if state="$(borgmatic_busy)"; then die "das Backup läuft gerade ($state) — nach dem Lauf erneut; nichts verändert." 3; fi
+  systemctl is-active --quiet "$DB_UNIT" || die "$DB_UNIT läuft nicht — root-socket startet nur eine laufende Datenbank neu; nichts verändert." 67
+  # Nur root zählt: ein anonymer ''@localhost wäre genauer als root@% und meldete
+  # sich ebenfalls an (Zweitprüfung PR #117).
+  if out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)" && [ "${out%%@*}" = root ]; then
+    section "root per Socket schon eingerichtet"
+    printf 'root per socket: ok %s — kein Neustart\n' "$out"
+    return 0
+  fi
+  [ -f "$DB_CNF" ] || die "$DB_CNF fehlt — ob root die Bedingung erfüllt, ist nicht lesbar; nichts verändert." 67
+  out="$(mysql --defaults-extra-file="$DB_CNF" -N -B -e "SELECT CONCAT(Host, ' ', IF(IFNULL($DB_ROOT_SOCKET_COND, 0), 'erfuellt', 'nicht-erfuellt')) FROM mysql.global_priv WHERE User = 'root' AND Host = $DB_ROOT_HOST_SQL" 2>&1)" \
+    || die "ob root die Bedingung erfüllt, ist nicht lesbar ($(db_error "$out")) — nichts verändert." 67
+  target="${out%% *}"
+  case "$out" in
+    "") die "weder root@localhost noch root@% vorhanden — nichts verändert." 67 ;;
+    *$'\n'*) die "mehr als ein Ziel-Eintrag für root — nichts verändert." 67 ;;
+    "localhost erfuellt"|"% erfuellt") ;;
+    *) die "root@$target erfüllt die Bedingung nicht (genau ein Verfahren, mysql_native_password oder ed25519 mit Hash) — nichts verändert; db-access root-auth zeigt den Eintrag." 67 ;;
+  esac
+  db_init_guard
+  db_init_restart "$(db_init_root_sql)" || die "$DB_INIT_FAIL" 1
+  section "root per Socket"
+  if ! out="$(root_mysql -e 'SELECT CURRENT_USER()' 2>&1)" || [ "${out%%@*}" != root ]; then
+    die "die Init-Datei hat nicht gewirkt — root per socket: $(db_error "$out") (Datenbank: $(systemctl is-active "$DB_UNIT" 2>&1); root hat nichts verloren)." 1
+  fi
+  printf 'root@%s: unix_socket zusätzlich zum bisherigen Verfahren (Passwort über TCP wie bisher)\n' "$target"
+  printf 'root per socket: ok %s\n' "$out"
   printf 'datenbank: %s\n' "$(systemctl is-active "$DB_UNIT" 2>&1)"
 }
 
@@ -1558,6 +1670,8 @@ case "$1" in
       adopt) db_adopt ;;
       restore) db_restore ;;
       bootstrap) db_bootstrap ;;
+      root-auth) db_root_auth ;;
+      root-socket) db_root_socket ;;
       *) usage >&2; die "unbekanntes db-access-Verb: $2" 64 ;;
     esac
     ;;

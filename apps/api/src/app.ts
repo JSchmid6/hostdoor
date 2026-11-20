@@ -99,6 +99,7 @@ import {
 } from "./update-review.js";
 import {
   buildHostRunReviewPrompt,
+  classifyHostRunFocus,
   HOST_RUN_HISTORY_HOURS,
   hostRunHistoryFromJobs,
   hostRunManifestHash,
@@ -113,12 +114,20 @@ import {
   shellFenceManifest,
   parseHostRunReviewAnswer,
   parseHostRunStatus,
+  parseReviewedFileShow,
+  REVIEWED_REPOSITORIES,
+  MAX_REVIEWED_FILES,
+  reviewedFileFailure,
+  reviewedInstallJob,
+  reviewedRepositoryPaths,
   stateStepKinds,
   verifyHostRunFindings,
   type HostRunHistory,
   type HostRunManifest,
   type HostRunReviewOutcome,
+  type ReviewedFile,
 } from "./host-run.js";
+import { forgejoApiFetch, loadHostRunPackage, type ForgejoFetch, type PackageSource } from "./host-run-package.js";
 
 interface AppOptions {
   config?: AppConfig;
@@ -133,6 +142,9 @@ interface AppOptions {
   // Reads the GitHub API for the second review of a self-update
   // (verifySecondReview). Defaults to api.github.com; tests inject a stub.
   githubFetch?: GithubFetch;
+  // Reads the operator's Forgejo for the package of a host run
+  // (host-run-package.ts). Defaults to config.forgejoUrl with its token; tests inject a stub.
+  forgejoFetch?: ForgejoFetch;
   // Interval of host.status polls while a host run is going (tests shorten it).
   hostRunPollMs?: number;
   // Takt und Höchstdauer des Wartens auf den Platz am Host (tests shorten them).
@@ -2240,14 +2252,51 @@ export async function createApp(options: AppOptions = {}) {
 
   // The reviewer prompt is kept next to the proposal (<jobId>-host-run-review.md,
   // 0600): exactly what the doorkeeper read.
+  // Files of reviewed repositories the plan names (card t_81392ccb): read on
+  // the host through the executor (dienste.show), each with the job of the
+  // Cockpit's own review that approved the installed commit, if any.
+  async function readReviewedFiles(jobId: string, manifest: HostRunManifest): Promise<ReviewedFile[]> {
+    const refs = reviewedRepositoryPaths(manifest);
+    const files: ReviewedFile[] = [];
+    for (const [index, ref] of refs.entries()) {
+      if (index >= MAX_REVIEWED_FILES) { files.push(reviewedFileFailure(ref, `more than ${MAX_REVIEWED_FILES} files named`, true)); continue; }
+      const repository = REVIEWED_REPOSITORIES.find((item) => item.root === ref.repository)!;
+      try {
+        if (!config.executorBrokerSocket || !config.executorBrokerSecret) throw new Error("typed executor broker is not configured");
+        const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+        const file = parseReviewedFileShow(await runExecutorAction(config.executorBrokerSocket, config.executorBrokerSecret, {
+          action: repository.showAction, target: ref.path, expiresAt, envelopeDigest: hashCanonical({ jobId, purpose: "host-run-reviewed-file", path: ref.path, expiresAt }),
+        }), ref);
+        if (file.head) file.reviewedBy = reviewedInstallJob(database.listCompletedJobsNaming("hermes-change", file.head), repository.kind, file.head);
+        files.push(file);
+      } catch (error) {
+        files.push(reviewedFileFailure(ref, error instanceof Error ? error.message : "read failed"));
+      }
+    }
+    return files;
+  }
+
+  // The package source of the host door (doc/setup/host-run.md 2c): only the
+  // configured Forgejo, only the configured owners, read by the Cockpit itself.
+  const packageSource: PackageSource = {
+    fetch: options.forgejoFetch ?? (config.forgejoUrl && config.forgejoToken ? forgejoApiFetch(config.forgejoUrl, config.forgejoToken, config.forgejoCaFile ?? null) : null),
+    owners: config.packageOwners ?? [],
+    label: config.forgejoUrl ? `Forgejo ${new URL(config.forgejoUrl).host}` : "Forgejo",
+  };
+
   async function reviewHostRun(jobId: string, manifest: HostRunManifest, proposalDir: string): Promise<HostRunReviewOutcome> {
-    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, history: hostRunHistory(jobId) });
-    const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus };
+    const loaded = manifest.package ? await loadHostRunPackage(manifest.package, packageSource) : null;
+    if (loaded?.problem) {
+      return { manifestHash: hostRunManifestHash(manifest), complete: false, missing: [`package: ${loaded.problem}`], focus: classifyHostRunFocus(manifest) };
+    }
+    const pkg = loaded?.pkg ?? null;
+    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, pkg, files: await readReviewedFiles(jobId, manifest), history: hostRunHistory(jobId) });
+    const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus, reviewedFiles: material.files };
     if (!material.complete) return outcome;
     outcome.reviewPath = path.join(proposalDir, `${jobId}-host-run-review.md`);
     await writeFile(outcome.reviewPath, material.prompt, { encoding: "utf-8", mode: 0o600 });
     try {
-      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest);
+      outcome.answer = verifyHostRunFindings(parseHostRunReviewAnswer(redactSecrets(await hostRunReviewRunner(material.prompt, jobId))), manifest, pkg, material.files);
     } catch (error) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
     }
@@ -2327,6 +2376,15 @@ export async function createApp(options: AppOptions = {}) {
   // Job beim Warten zurück, startet nichts mehr.
   async function startHostRunWhenFree(approvedEnvelope: ExecutionEnvelope, manifest: HostRunManifest): Promise<string> {
     let envelope = approvedEnvelope;
+    // The package is fetched again for the start (the approval can come hours
+    // after the review); its sha256 list in the signed manifest makes the bytes
+    // the reviewed ones, and the helper checks them once more.
+    let packageFiles: { files: Array<{ path: string; content: string }> } | null = null;
+    if (manifest.package) {
+      const loaded = await loadHostRunPackage(manifest.package, packageSource);
+      if (!loaded.pkg) throw new Error(`the host run's package could not be loaded (${loaded.problem}); nothing was executed`);
+      packageFiles = { files: loaded.pkg.files.map((file) => ({ path: file.path, content: Buffer.from(file.text, "utf8").toString("base64") })) };
+    }
     const jobId = envelope.jobId;
     let waitUntil = Number.POSITIVE_INFINITY;
     let waitingSince = "";
@@ -2361,7 +2419,7 @@ export async function createApp(options: AppOptions = {}) {
       }
       try {
         return await runDynamicCapability(config.executorBrokerSocket!, config.executorBrokerSecret!, {
-          action: "host.run", manifest, envelope, expiresAt: envelope.expiresAt, envelopeDigest: envelope.digest,
+          action: "host.run", manifest, envelope, expiresAt: envelope.expiresAt, envelopeDigest: envelope.digest, ...(packageFiles ? { package: packageFiles } : {}),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

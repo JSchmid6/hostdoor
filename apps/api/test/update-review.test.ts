@@ -42,8 +42,10 @@ const NONCE = "feedfacecafebeef";
 // room the tests rely on is kept, not the absolute number. 17_000 since the hint on
 // unchanged context in the instructions (t_7ea8785f). 18_100 since G9 names how X2 is
 // judged by effect (t_befe7fc7, +~1 kB). 18_600 since G9 names the chain rule and the
-// door's recent record (t_f9c7dcec, +~0.5 kB).
-const SMALL_PASS = 18_600;
+// door's recent record (t_f9c7dcec, +~0.5 kB). 19_200 since G9 also names the host-run
+// package, the files of reviewed repositories and the record's room (merge of main into
+// t_befe7fc7, card t_8e0fab89, +~0.6 kB).
+const SMALL_PASS = 19_200;
 
 function section(path: string, lines: string[]): { path: string; text: string } {
   return { path, text: `${[`diff --git a/${path} b/${path}`, "--- a/" + path, "+++ b/" + path, ...lines].join("\n")}\n` };
@@ -180,10 +182,10 @@ describe("self-update pre-install review", () => {
     const path = "apps/api/src/hermes-security.ts";
     const hunk = (index: number) => [`@@ -${index * 100 + 1},40 +${index * 100 + 1},40 @@`, ...Array.from({ length: 40 }, (_, line) => `+h${index} l${line} ${"x".repeat(60)}`)];
     const big = section(path, Array.from({ length: 6 }, (_, index) => hunk(index)).flat());
-    // 23_900: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule, 23_900 since the chain rule, t_f9c7dcec).
-    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 23_900 });
+    // 24_500: the room for one hunk next to the instructions, kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule, 23_900 since the chain rule, t_f9c7dcec, 24_500 since the package, reviewed files and the record's room, t_8e0fab89).
+    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [big] })], { nonce: NONCE, limit: 24_500 });
     expect(prompts.length).toBeGreaterThan(1);
-    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 23_900)).toBe(true);
+    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 24_500)).toBe(true);
     expect(coverage[0]).toMatchObject({ incomplete: [], cut: [], omitted: [] });
     // Every hunk exactly once, whole, with the file header in every part.
     for (let index = 0; index < 6; index += 1) {
@@ -292,8 +294,9 @@ describe("self-update pre-install review", () => {
       "doc/a.md", "apps/api/src/app.ts", "package-lock.json", "Dockerfile.web", "apps/api/package.json", "ops/cockpit-capability-action.mjs", "deploy/systemd/x.service",
     ].map((path) => ({ path, text: "" })), UPDATE_KINDS.self.supplementary).map((item) => item.path))
       .toEqual(["Dockerfile.web", "apps/api/package.json", "ops/cockpit-capability-action.mjs", "deploy/systemd/x.service", "package-lock.json", "apps/api/src/app.ts", "doc/a.md"]);
-    const { prompts, coverage } = buildUpdateReviewPrompt([runnerOrder], { nonce: NONCE, limit: 40_000 });
-    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 40_000)).toBe(true);
+    // 40_600 (was 40_000): the deploy script and the test file still share the first pass when G9 grew (package, reviewed files, record's room; t_8e0fab89).
+    const { prompts, coverage } = buildUpdateReviewPrompt([runnerOrder], { nonce: NONCE, limit: 40_600 });
+    expect(prompts.every((prompt) => Buffer.byteLength(prompt) <= 40_600)).toBe(true);
     // Every file complete, the deploy script in front of the test file.
     expect(coverage[0]).toMatchObject({ incomplete: [], cut: [], omitted: [] });
     const all = prompts.join("\n");
@@ -373,8 +376,8 @@ describe("self-update pre-install review", () => {
     const many = Array.from({ length: 6 }, (_, index) => section(`apps/api/src/part-${index}.ts`, ["@@ -1,100 +1,100 @@", ...Array.from({ length: 100 }, (_, line) => `+${index} ${line} ${"p".repeat(60)}`)]));
     const capped = buildUpdateReviewPrompt([diff({
       files: many.map((item) => ({ status: "M", path: item.path, added: 100, deleted: 100, class: "other" })), filesTotal: 6, focusAreas: [], excerpt: many,
-    // 25_000 (was 24_000): room for one part per pass kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule).
-    })], { nonce: NONCE, limit: 25_000, maxPasses: 2 });
+    // 25_600 (was 24_000): room for one part per pass kept when G9 grew (t_befe7fc7, 23_400 since the renewal rule; 25_600 since the package, reviewed files and the record's room, t_8e0fab89).
+    })], { nonce: NONCE, limit: 25_600, maxPasses: 2 });
     expect(capped.prompts).toHaveLength(2);
     expect(capped.coverage[0].incomplete.length).toBeGreaterThan(0);
     expect(capped.coverage[0].omitted).toEqual(capped.coverage[0].incomplete);
