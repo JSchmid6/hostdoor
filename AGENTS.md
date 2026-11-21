@@ -223,8 +223,14 @@ Bare-metal Ubuntu VPS running:
 - Email Archive production deployment is driven by
   `email-archive-auto-deploy.timer`. The source pipeline promotes `latest` only
   after tests and both immutable image builds succeed. The fixed deployer
-  authenticates to the GitLab registry with a read-only project deploy token,
-  verifies that `latest`, its OCI Git revision label, and the full immutable
+  authenticates to the container registry of the Forgejo instance
+  (`git.wejos.de:3443/registry-bot/email-archive`, namespace of the service
+  account `registry-bot`, whose `write:package` token lives only in the
+  project's CI secrets) with that account's separate `read:package` token from
+  `/etc/wireguard-ops-cockpit/email-archive-forgejo-registry.env` (root-only,
+  never in prompts or logs; the internal CA is `forgejo-ca.crt` next to it and
+  in `/etc/docker/certs.d/git.wejos.de:3443/`, `git.wejos.de` resolves to
+  `10.0.0.1` through `/etc/hosts`), verifies that `latest`, its OCI Git revision label, and the full immutable
   revision tag share one manifest digest, mirrors that digest to the private
   AppAPI registry, and invokes `app_api:app:update`. It stores only the last
   successful revision, digest, and public app metadata for rollback. Registry
@@ -236,8 +242,14 @@ Bare-metal Ubuntu VPS running:
   running container or any image.
 - The source registry may return OCI indexes/manifests or Docker schema-2
   lists/manifests. The deployer advertises all four media types; accepting only
-  Docker's single-image media type makes GitLab return a misleading
-  `MANIFEST_UNKNOWN`/404 even when the read-only deploy token is valid.
+  Docker's single-image media type makes the registry return a misleading
+  `MANIFEST_UNKNOWN`/404 even when the read-only token is valid. A Forgejo job
+  token cannot write packages (401 on the blob upload, probed 20.11.2026), and
+  a collaborator cannot push into another user's namespace, hence the service
+  account that owns the namespace. Return path of the 20.11.2026 switch from
+  the GitLab registry: the old `email-archive-registry.env` stays on the host;
+  restoring the previous unit file and helper from the commit before this change
+  switches back.
 - Context Chat end-to-end checks use `cockpit-nextcloud-context-action`. It can create only a new, non-overwriting marker document below `Cockpit E2E Tests` through the Nextcloud Files API, inspect that exact marker's path/id/size, and invoke only fixed statistics, marker-search, and marker-prompt operations. File evidence is also written to stderr because Nextcloud bootstrap buffering can consume stdout. It has no arbitrary path, content, deletion, or `occ` mode.
 - Exact regular-file mutations invoke `cockpit-exact-file-replace` directly without `runAsUser`, an interpreter wrapper, or a temporary copy: the target must equal an envelope-authorized `writablePaths` entry, the old text must occur exactly once, and the helper writes the existing inode rather than attempting a rename across the sandbox bind mount.
 - The Executor service uses `ProtectSystem=true`; the signed inner capability sandbox is the exact-path enforcement boundary. `ProtectSystem=strict` on the outer service would make the host path read-only before the inner sandbox can bind the authorized writable file and would also prevent snapshot restoration.
