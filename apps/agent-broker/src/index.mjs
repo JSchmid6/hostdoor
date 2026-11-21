@@ -293,6 +293,15 @@ export function claudeStream() {
   };
 }
 
+// How often Claude's safety classifier stopped the answer (result event
+// `safety_stops`, Claude Code 2.1.3xx; card t_9f370d63). The CLI then tells the
+// model the rest was withheld and lets it continue once, and `result` holds only
+// that continuation: without the findings it was writing. Missing → 0.
+export function claudeSafetyStops(result) {
+  const stops = result?.safety_stops;
+  return Number.isInteger(stops) && stops > 0 ? Math.min(stops, 1_000) : 0;
+}
+
 export function cleanReason(text) {
   return String(text).replace(/\s+/g, " ").replace(/[A-Za-z0-9_\-]{32,}/g, "[…]").trim().slice(0, 300);
 }
@@ -416,7 +425,15 @@ async function runClaudeIn(request, workspace, tmpdir, claude, deadline) {
   // How many of Claude's own permission checks refused a tool call (bypass
   // means none; the job shows it, so a refusal never stays silent).
   const denials = Array.isArray(stream.result?.permission_denials) ? stream.result.permission_denials.length : 0;
-  const claudeEngine = (model) => ({ name: "claude", model, ...(denials ? { permissionDenials: denials } : {}) });
+  const safetyStops = claudeSafetyStops(stream.result);
+  const claudeEngine = (model) => ({ name: "claude", model, ...(denials ? { permissionDenials: denials } : {}), ...(safetyStops ? { safetyStops } : {}) });
+  // A review that Claude's safety classifier stopped is no answer, and no weaker
+  // stand-in reviews what stopped the stronger one: it fails with the count on
+  // the engine and the continuation as output, and the API decides (the
+  // doorkeeper sends it to the operator, never as a pass; card t_9f370d63).
+  if (request.role === "safety" && safetyStops) {
+    return { ok: false, exitCode: run.code, error: `claude's safety classifier stopped the review ${safetyStops} time(s); the rest was withheld, no stand-in`, ...(parsed.ok ? { output: parsed.output } : {}), engine: claudeEngine(parsed.ok ? parsed.model : claude.model) };
+  }
   if (parsed.ok && run.code === 0) return { ok: true, exitCode: 0, output: parsed.output, engine: claudeEngine(parsed.model) };
   // A run that used its whole budget has no time left for a second engine,
   // and its failure is no outage: it fails like any role over budget.

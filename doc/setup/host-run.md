@@ -97,6 +97,7 @@ Kein Treffer stoppt selbst. Die Entscheidung:
 | `VERDICT: pass` | Der Lauf startet. |
 | `VERDICT: flag` mit mindestens einem **belegten** Befund | Jochen entscheidet (`blocked_user_approval`), mit Befund, Pfad und zitiertem Code. |
 | Befund ohne Beleg | wird verworfen (und im Protokoll genannt). Bleibt keiner übrig: Stopp als unvollständige Prüfung. |
+| Claudes Sicherheitsfilter hat die Antwort gestoppt (`safety_stops` > 0, Broker-Feld `engine.safetyStops`) | gilt als **flag**: Jochen entscheidet (`blocked_user_approval`), nie ein Durchlass, egal welches Urteil die Fortsetzung nennt. Grund im Job: der Filter hat die Begründung zurückgehalten; belegte Befunde, die vor dem Stopp durchkamen, und die Fokus-Treffer stehen dabei. |
 | Prüfmaterial passt nicht ins Budget (90 000 Bytes), Reviewer antwortet nicht, Antwort unlesbar | Stopp: „Prüfung unvollständig“ (`blocked_prerequisite`). Das ist kein Freigabe-Angebot; der Plan wird neu eingereicht. |
 
 Ein Befund gilt als belegt, wenn `WHERE` eine vorhandene Zeile nennt, das Zitat in `CODE`
@@ -108,6 +109,18 @@ Skriptzeile Text, der wie ein Geheimnis aussieht, geht sie deshalb wörtlich an 
 steht als Fokus `literal-secret` in der Liste; ein wörtliches Geheimnis im Plan ist nach dem Prompt
 ein X1-Befund. Ein harmloser Name, der nur so aussieht (`task-runner-…` trifft das `sk-`-Muster),
 stoppt so nichts.
+
+**Vom Sicherheitsfilter gestoppt (Jochens Auftrag 16.11.2026, Karte t_9f370d63).** Bei genau den
+gefährlichsten Plänen (sudoers, setuid, Geheimnis lesen, Ziel eines Drop-ins anlegen) stoppte Claudes
+API-Sicherheitsfilter (Kategorie `cyber`) die Antwort des Türstehers mitten im Befund: 14 von 15
+Messläufen auf der VPS hatten einen Stopp, 11 davon endeten als „Prüfung unvollständig“ (Rohdaten mit
+vollem stream-json unter `/opt/data/out/t_9f370d63/`). Die CLI lässt das Modell danach einmal fortsetzen
+(„do not produce that content again“) und gibt in `result` nur die Fortsetzung zurück, meist ohne
+FINDING-Block oder leer. Das Modell selbst verweigerte nicht: Der gestoppte erste Teil war ein regulärer
+Befund. Seitdem gilt „verweigert heißt Befund“: Das strukturierte Feld `safety_stops` (kein Textmuster)
+macht den Lauf zum Stopp an Jochen statt zu einem technischen Fehler für James. Grund: Der Filter greift,
+wenn der Prüfer einen Schaden beschreibt, und Jochen sieht die Schritte selbst. Ein Durchlass entsteht
+daraus nie. Der Broker lässt dafür keinen opencode-Rückfall zu (`doc/setup/plan-engine-claude.md`, NOTBETRIEB).
 
 Es gibt keine Freigabe als Regel, auch nicht für „geschützte Pfade“ — mit zwei ausdrücklichen
 Ausnahmen: Backups löschen (2a, als X4-Befund des Türstehers) und dem Risiko-Riegel (2b). Die
@@ -746,6 +759,11 @@ Weitere bekannte Grenzen:
   Ausgeben von Geheimnissen deshalb als Befund, egal wohin die Ausgabe geht.
 - Ein privater Schlüsselblock ohne END-Zeile wird höchstens 200 Zeilen lang geschwärzt, damit er
   nicht den Rest des Protokolls verschluckt.
+- Stoppt Claudes Sicherheitsfilter den Türsteher, sieht Jochen keine Begründung, nur die Schritte, die
+  Fokus-Treffer und die Befunde, die vor dem Stopp durchkamen. Die CLI kann nach einem Stopp selbst auf ein
+  älteres Opus wechseln (`model_refusal_fallback`, gemessen: `claude-opus-4-8`); auch ein solcher Lauf zählt
+  als gestoppt. Hängt am Feld `safety_stops` der Claude-CLI (gemessen mit 2.1.311); fällt es in einer
+  künftigen CLI weg, gilt wieder „Prüfung unvollständig“ (fail-safe, aber wieder bei James).
 - `mutates: false` spart Snapshot und Backup-Prüfung. Stimmt die Behauptung nicht, ist das ein
   X5-Befund des Türstehers — einen deterministischen Riegel dafür gibt es bewusst nicht.
 - Kommt ein angeforderter Neustart nicht (gleiche Boot-Kennung 30 Minuten nach der Anforderung),
@@ -775,6 +793,7 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
 |---|---|---|
 | **PASS** — Freigabe auf vollständigem Material | läuft ohne Jochen (`ready`) | Jochen entscheidet (`blocked_user_approval`) |
 | **FINDING** — mindestens ein echter Befund (Türsteher: mit Beleg; Selbstupdate: `GUARANTEE` nicht `UNVERIFIABLE`) | Jochen entscheidet, mit Befund und zitiertem Code (`blocked_user_approval`) | Jochen entscheidet, Befund und Riegel/Blocker zusammen (`blocked_user_approval`); ist der Plan schon `blocked_prerequisite`/`blocked_policy`, bleibt diese Sperre, und der Befund steht in `GET /api/inbox` unter `reviewFindings` |
+| **STOPPED** — Claudes Sicherheitsfilter hat die Antwort des Türstehers gestoppt (`safety_stops` > 0; nur Türsteher, seit 18.11.2026, Karte t_9f370d63) | Jochen entscheidet wie bei FINDING (`blocked_user_approval`), mit dem Hinweis „Begründung vom Filter zurückgehalten“ und den Befunden, die durchkamen; nie `ready` | Jochen entscheidet, Stopp und Riegel zusammen (`blocked_user_approval`) |
 | **INCOMPLETE** — Material fehlt oder zu groß, Prüfer antwortet nicht, Antwort unlesbar, nur `UNVERIFIABLE` bzw. Befunde ohne Beleg | Stopp ohne Freigabe-Angebot (`blocked_prerequisite`): technischer Fehler für James, keine Frage an Jochen | ebenso `blocked_prerequisite` — ungeprüft wird nie zur Freigabe angeboten (nur `blocked_policy` bleibt) |
 
 - Ein echter Befund landet immer bei Jochen, ohne Ausnahme — auch wenn die Prüfung zusätzlich

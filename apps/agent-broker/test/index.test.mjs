@@ -17,7 +17,7 @@ process.env.COCKPIT_AGENT_WORKSPACE_ROOT = fs.mkdtempSync(path.join(os.tmpdir(),
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-home-"));
 // The check derives it from HOME alone, like opencode, which gets no XDG_CONFIG_HOME.
 process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-xdg-"));
-const { assertNoPlantedConfig, redactLogin, claudeStream, claudeStreamLineLimit, runProcess, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
+const { assertNoPlantedConfig, redactLogin, claudeStream, claudeStreamLineLimit, runProcess, claudeSocketPathLength, claudeTmpRoot, cleanReason, cleanupStaleWorkspaces, claudeSafetyStops, createClaudeTmpdir, parseClaudeResult, createSessionWorkspace, globalConfigNames, parseServedRoles, projectConfigNames, removeSessionWorkspace, runAgent, sessionStateDirs, validateRequest } = await import("../src/index.mjs");
 const { PROMPT_LIMITS, promptLimit, promptLimitProblem } = await import("../src/prompt-limits.mjs");
 test.after(() => {
   fs.rmSync(process.env.COCKPIT_AGENT_WORKSPACE_ROOT, { recursive: true, force: true });
@@ -395,6 +395,8 @@ case "$PWD" in
   */agent-c1a0b1a7*) echo '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in"}'; touch "$PWD/../opencode.json"; exit 1;;
   */agent-c1a0bad0*) echo "error: unknown option '--safe-mode'" >&2; exit 2;;
   */agent-c1a0ac7e*) echo '{"type":"system","subtype":"init"}'; echo '{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Bash","input":{}}]}}'; echo '{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached"}'; exit 1;;
+  */agent-c1a05a1e*) cat >/dev/null; echo '{"type":"result","subtype":"success","is_error":false,"result":"VERDICT: flag (cut off)","modelUsage":{"claude-opus-5-5":{}},"safety_stops":1}'; exit 0;;
+  */agent-c1a05a1f*) cat >/dev/null; echo '{"type":"result","subtype":"success","is_error":false,"result":"","modelUsage":{"claude-opus-5-5":{},"claude-opus-4-8":{}},"safety_stops":2}'; exit 0;;
   */agent-c1a0de11*) cat >/dev/null; echo 'not json'; echo '{"type":"result","subtype":"success","is_error":false,"result":"done","modelUsage":{"claude-opus-5-5":{}},"permission_denials":[{"tool_name":"Bash"},{"tool_name":"Read"}]}'; exit 0;;
 esac
 prompt=$(cat)
@@ -494,6 +496,21 @@ node -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is
     const denied = await runAgent({ requestId: "c1a0de11-1", role: "runner", prompt: "run" });
     assert.equal(denied.ok, true, denied.error);
     assert.deepEqual(denied.engine, { name: "claude", model: "claude-opus-5-5", permissionDenials: 2 });
+    // Claude's safety classifier stopped a review (result safety_stops, card t_9f370d63):
+    // no answer and no stand-in; the count is on the engine, the continuation is the output.
+    const stopped = await runAgent({ requestId: "c1a05a1e-1", role: "safety", prompt: "review" });
+    assert.equal(stopped.ok, false);
+    assert.equal(stopped.error, "claude's safety classifier stopped the review 1 time(s); the rest was withheld, no stand-in");
+    assert.equal(stopped.output, "VERDICT: flag (cut off)");
+    assert.deepEqual(stopped.engine, { name: "claude", model: "claude-opus-5-5", safetyStops: 1 });
+    const stoppedEmpty = await runAgent({ requestId: "c1a05a1f-1", role: "safety", prompt: "review" });
+    assert.equal(stoppedEmpty.ok, false);
+    assert.equal(stoppedEmpty.output, undefined);
+    assert.deepEqual(stoppedEmpty.engine, { name: "claude", model: "opus", safetyStops: 2 });
+    // Other roles keep their answer; the stop is counted on the engine.
+    const stoppedVerifier = await runAgent({ requestId: "c1a05a1e-2", role: "verifier", prompt: "review" });
+    assert.equal(stoppedVerifier.ok, true, stoppedVerifier.error);
+    assert.deepEqual(stoppedVerifier.engine, { name: "claude", model: "claude-opus-5-5", safetyStops: 1 });
     // Its own switch keeps the runner on opencode, without NOTBETRIEB.
     process.env.COCKPIT_RUNNER_ENGINE = "opencode";
     assert.deepEqual((await runAgent({ requestId: "c1a0de00-8", role: "runner", prompt: "run" })).engine, { name: "opencode", model: "default" });
@@ -518,6 +535,9 @@ test("Claude's result is parsed for the answer and the model that answered; reas
   assert.deepEqual(parseClaudeResult('{"subtype":"error_max_turns","is_error":true,"result":""}'), { ok: false, json: true, reason: "claude ended with error_max_turns" });
   assert.equal(parseClaudeResult("").ok, false);
   assert.equal(parseClaudeResult('{"subtype":"success","is_error":false,"result":"  "}').ok, false);
+  assert.equal(claudeSafetyStops({ safety_stops: 2 }), 2);
+  for (const value of [undefined, null, 0, -1, 1.5, "3"]) assert.equal(claudeSafetyStops({ safety_stops: value }), 0);
+  assert.equal(claudeSafetyStops(null), 0);
   assert.equal(cleanReason(`bad token sk-ant-oat01-${"a".repeat(40)}\n next`), "bad token […] next");
 });
 

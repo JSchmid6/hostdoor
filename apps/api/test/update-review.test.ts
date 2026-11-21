@@ -234,14 +234,14 @@ describe("self-update pre-install review", () => {
   it("does not stop when only documentation is cut, and documentation never opens a pass", () => {
     const big = section("README.md", ["@@ -1 +1,400 @@", ...Array.from({ length: 400 }, (_, index) => `+docs ${index} ${"y".repeat(60)}`)]);
     const small = diff().excerpt[0];
-    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [small, big, section("docs/other.md", ["@@ -1 +1 @@", "-a", "+b"])] })], { nonce: NONCE, limit: 20_000 });
+    const { prompts, coverage } = buildUpdateReviewPrompt([diff({ excerpt: [small, big, section("docs/other.md", ["@@ -1 +1 @@", "-a", "+b"])] })], { nonce: NONCE, limit: 22_000 });
     // The big README is cut with what is left after everything else; the small doc behind it is whole.
     expect(prompts).toHaveLength(1);
     expect(coverage[0]).toMatchObject({ sha: SHA, incomplete: [], cut: ["README.md"], omitted: [] });
     expect(prompts[0]).toContain("+b\n");
-    expect(Buffer.byteLength(prompts[0])).toBeLessThanOrEqual(20_000);
+    expect(Buffer.byteLength(prompts[0])).toBeLessThanOrEqual(22_000);
     // Cut by the runner: named as cut, also when it fits here.
-    const runnerCut = buildUpdateReviewPrompt([diff({ excerpt: [small, big, section("docs/other.md", ["@@ -1 +1 @@", "-a", "+b"])], partialFiles: ["docs/other.md"] })], { nonce: NONCE, limit: 20_000 });
+    const runnerCut = buildUpdateReviewPrompt([diff({ excerpt: [small, big, section("docs/other.md", ["@@ -1 +1 @@", "-a", "+b"])], partialFiles: ["docs/other.md"] })], { nonce: NONCE, limit: 22_000 });
     expect(runnerCut.coverage[0]).toMatchObject({ incomplete: [], cut: ["docs/other.md", "README.md"], omitted: [] });
   });
 
