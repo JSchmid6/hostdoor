@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 
+import type { JobRecord } from "@wireguard-ops-cockpit/domain";
 import { describe, expect, it } from "vitest";
 
 import {
   buildHostRunReviewPrompt,
   HOST_RUN_REVIEW_INSTRUCTIONS,
   classifyHostRunFocus,
+  hostRunHistoryFromJobs,
   hostRunManifestHash,
   hostRunPlannerContract,
   hostRunPolicy,
@@ -17,6 +19,7 @@ import {
   parseHostRunReviewAnswer,
   parseHostRunStatus,
   verifyHostRunFindings,
+  type HostRunHistory,
   parseReviewedFileShow,
   reviewedFileFailure,
   reviewedFileStandIssue,
@@ -26,6 +29,12 @@ import {
   type HostRunManifest,
   type HostRunReviewOutcome,
 } from "../src/host-run.js";
+import { UPDATE_REVIEW_INSTRUCTIONS } from "../src/update-review-prompt.js";
+
+// The door's record of a measured case, shared with test/host-run-review-live.mjs.
+const { caseHistory } = await import("../../../test/host-run-history-fixture.mjs") as {
+  caseHistory: (item: unknown, cases: unknown[], parse: typeof parseHostRunManifest) => HostRunHistory;
+};
 
 // The 30.09.2026 case: package care stopped at the old sandbox because
 // /etc/apt holds sources.list.save and trusted.gpg~ (protected name patterns),
@@ -461,6 +470,155 @@ describe("host-run manifest from the trusted intent", () => {
   });
 });
 
+// X2 by effect (Jochen, 16.11.2026, card t_befe7fc7): the doorkeeper judges a
+// change to the Cockpit's own units by what it does, from criteria and examples
+// in its instructions; no name or command pattern decides. These tests pin the
+// wording and the cases; whether a model judges them right is measured with a
+// real run (test/host-run-review-live.mjs), not here.
+describe("doorkeeper X2 judged by effect", () => {
+  const cases = JSON.parse(readFileSync(new URL("./fixtures/host-run-review-cases.json", import.meta.url), "utf8")).cases as Array<{ id: string; expect: string; classes?: string[]; manifest: unknown; history?: { runs: Array<Record<string, unknown>> } }>;
+
+  it("asks the effect question and names all four conditions of the exception", () => {
+    const x2 = HOST_RUN_REVIEW_INSTRUCTIONS.slice(HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X2 Authority"), HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X3 Exposure"));
+    expect(x2).toContain("by its effect, as an administrator who understands it would, not by the name it touches");
+    expect(x2).toContain("does it widen who may act or what a unit may do");
+    expect(x2).toContain("does it redirect what runs with the Cockpit's rights");
+    expect(x2).toContain("(a) it only restricts");
+    expect(x2).toContain("(b) it is volatile: it lives only under /run");
+    expect(x2).toContain("(c) it takes itself back");
+    expect(x2).toContain("(d) it fits the stated purpose");
+    expect(x2).toContain("When in doubt, flag.");
+    // Second review R1 (t_befe7fc7): a protection switched off is no restriction, the
+    // target must not come from the plan, the self-revert has a time bound, and the
+    // fallback window of the reviewer itself is named.
+    expect(x2).toContain("switching off a protection is never \"only restricts\"");
+    expect(x2).toContain("that nothing in this plan creates");
+    expect(x2).toContain("within the short time the plan states and the purpose needs");
+    expect(x2).toContain("creating a file at a path that a runtime drop-in of a Cockpit unit names");
+    expect(x2).toContain("the runs in that window are reviewed by the fallback engine");
+    // Second review R1 of 18.11.2026: renewing an open window is not taking it back, else a
+    // chain of short runs holds the fallback open without the operator.
+    expect(x2).toContain("renewing or extending a window that is already open fails (c) as well");
+    expect(x2).toContain("a step that stops, replaces or re-arms an earlier run's self-revert");
+    expect(x2).toContain("a run that stops or re-arms an earlier run's self-revert");
+    // Second review R2 of 19.11.2026 (card t_f9c7dcec): a window opened again after the
+    // previous one closed is a chain too; the door's record shows it, and without a
+    // whole record (c) cannot be shown.
+    expect(x2).toContain("opening a window again after an earlier one closed is renewing it as well, however short the gap");
+    expect(x2).toContain("passes (c) only when that record shows no other window in those 24 hours, open or already closed, whatever card, name or purpose it carried");
+    expect(x2).toContain("a record that is missing, unavailable, incomplete or cut for the budget shows nothing");
+    expect(x2).toContain("so that the windows join into a chain");
+  });
+
+  it("keeps code, unit files, helpers, sudoers, secrets, persistence, redirects and widening as findings", () => {
+    const x2 = HOST_RUN_REVIEW_INSTRUCTIONS.slice(HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X2 Authority"), HOST_RUN_REVIEW_INSTRUCTIONS.indexOf("X3 Exposure"));
+    expect(x2).toContain("its code, helpers, unit files, sudoers and secrets change only through its reviewed self-update, so writing or replacing any of them here is a finding");
+    expect(x2).toContain("the same drop-in under /etc/systemd/system");
+    expect(x2).toContain("any path that exists or might");
+    expect(x2).toContain("volatile does not excuse widening");
+    expect(x2).toContain("a self-revert that is missing, does not match the change, is hidden or comes days later");
+    // The other classes are untouched: reading a Cockpit secret stays X1, hidden code X5.
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("Reading a secret listed above is always a finding");
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("code is hidden from review (downloaded and executed, base64, eval");
+  });
+
+  it("the pre-install review treats widening the X2 exception as narrowing G9", () => {
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Authority (X2) is judged by effect");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert or the rule that renewing an open window is a finding");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("dropping the chain rule or the door's recent record from the doorkeeper's material");
+  });
+
+  it("every measured case is a valid manifest, and the Cockpit focus still points at the pass cases", () => {
+    expect(cases.filter((item) => item.expect === "pass").map((item) => item.id)).toEqual(["pass-fallback-test-on", "pass-fallback-test-off"]);
+    expect(cases.filter((item) => item.expect === "flag")).toHaveLength(15);
+    for (const item of cases) {
+      const manifest = parseHostRunManifest(plan(item.manifest));
+      expect(manifest, item.id).not.toBeNull();
+      expect(buildHostRunReviewPrompt(manifest!, { nonce: "n", history: caseHistory(item, cases, parseHostRunManifest) }).complete, item.id).toBe(true);
+      if (item.expect === "pass") expect(classifyHostRunFocus(manifest!).map((focus) => focus.kind), item.id).toContain("cockpit");
+    }
+    // The on-run that may pass refuses to renew an open window; the renewal forms are flag cases.
+    const on = cases.find((item) => item.id === "pass-fallback-test-on")!.manifest as { steps: Array<{ run: string }> };
+    // Its guard is not bound to its own names (second review R2, H4): any runtime drop-in
+    // on the agent or runner unit, or any fallback revert timer, stops it.
+    expect(on.steps[0].run).toContain("systemctl show -p DropInPaths --value wireguard-ops-cockpit-agent.service wireguard-ops-cockpit-runner.service");
+    expect(on.steps[0].run).toContain("'cockpit-rueckfalltest-revert-*'");
+    expect(on.steps[0].run).not.toContain("systemctl stop cockpit-rueckfalltest-revert");
+    for (const id of ["flag-renewal", "flag-extend-window", "flag-reopen-chain", "flag-other-card-over-open-window"]) {
+      expect(cases.find((item) => item.id === id)?.expect, id).toBe("flag");
+    }
+    // The chain case is the pass case itself; only the door's record differs.
+    const chain = cases.find((item) => item.id === "flag-reopen-chain")!;
+    expect(chain.manifest).toEqual(cases.find((item) => item.id === "pass-fallback-test-on")!.manifest);
+    expect(chain.history?.runs[0]).toMatchObject({ manifestFrom: "pass-fallback-test-on", finishedMinutesAgo: 40 });
+  });
+});
+
+// The door's recent record (second review R2 of 19.11.2026, card t_f9c7dcec):
+// the doorkeeper sees the runs of the last 24 h from the job table, so a chain
+// of windows is visible although each plan alone passes.
+describe("doorkeeper record of recent runs", () => {
+  const cases = JSON.parse(readFileSync(new URL("./fixtures/host-run-review-cases.json", import.meta.url), "utf8")).cases as Array<{ id: string; manifest: unknown }>;
+  const onManifest = cases.find((item) => item.id === "pass-fallback-test-on")!.manifest;
+  const now = new Date("2026-11-19T12:00:00.000Z");
+  const job = (id: string, output: Record<string, unknown> | null, extra: Partial<JobRecord> = {}): JobRecord => ({
+    id, sessionId: "s", kind: "runbook", subjectId: "hermes-change", status: "completed", requiresApproval: false, approvalId: null,
+    output, createdAt: "2026-11-19T11:19:00.000Z", updatedAt: "2026-11-19T11:20:00.000Z", completedAt: "2026-11-19T11:20:00.000Z", ...extra,
+  });
+
+  it("takes every run of this door and every NOTBETRIEB job from the job table, not the job under review", () => {
+    const history = hostRunHistoryFromJobs([
+      job("current", { hostRun: onManifest }),
+      job("on-1", { hostRun: onManifest, executionStartedAt: "2026-11-19T11:19:30.000Z", agentEngine: { doorkeeper: { name: "claude", model: "opus" } } }),
+      job("research", { agentEngine: { research: { name: "opencode", model: "deepseek", notbetrieb: true, reason: "ENOENT" } } }, { subjectId: "hermes-research" }),
+      job("garbled", { plan: "```host-run\n{not json\n```", safety: { details: { schemaVersion: "host-run-review/v1" } } }),
+      job("other-door", { plan: "## Plan\nread the logs" }),
+    ], "current", now);
+    expect(history.runs.map((run) => run.jobId)).toEqual(["on-1", "garbled"]);
+    expect(history.runs[0]).toMatchObject({ startedAt: "2026-11-19T11:19:30.000Z", finishedAt: "2026-11-19T11:20:00.000Z", engines: ["doorkeeper claude/opus"] });
+    expect(history.runs[0].manifest?.name).toBe("fallback-test-on-t_0cb8edbd");
+    expect(history.runs[1].manifest).toBeNull();
+    expect(history.notbetrieb).toEqual([{ jobId: "research", orderedAt: "2026-11-19T11:19:00.000Z", status: "completed", roles: ["research"] }]);
+  });
+
+  it("puts the record into the material with times, focus and steps, and names a cut or missing record", () => {
+    const manifest = parseHostRunManifest(plan(onManifest))!;
+    const history = hostRunHistoryFromJobs([job("on-1", { hostRun: onManifest })], "current", now);
+    const material = buildHostRunReviewPrompt(manifest, { nonce: "n", history });
+    expect(material.complete).toBe(true);
+    const record = material.prompt.slice(material.prompt.indexOf("## Recent record of this door"), material.prompt.indexOf("END_REVIEW_DATA n\n"));
+    expect(record).toContain("not from the requester; the last 24 h");
+    expect(record).toContain("Now: 2026-11-19T12:00:00.000Z");
+    expect(record).toContain("R1 job on-1: ordered 2026-11-19T11:19:00.000Z, started -, finished 2026-11-19T11:20:00.000Z, status completed");
+    expect(record).toContain("R1 name (requester's words): fallback-test-on-t_0cb8edbd");
+    expect(record).toMatch(/R1 name[^\n]*focus: [^\n]*cockpit S1:L/);
+    expect(record).toContain("R1.S1:L3  mkdir -p /run/systemd/system/wireguard-ops-cockpit-agent.service.d");
+    // The record is context: the plan's own line ids stay the only ones a finding may cite.
+    expect(material.lineIds.some((id) => id.startsWith("R"))).toBe(false);
+    // Inside the data markers, after the plan.
+    expect(material.prompt.indexOf("## Recent record of this door")).toBeGreaterThan(material.prompt.indexOf("## Rollback"));
+    expect(material.prompt.indexOf("## Recent record of this door")).toBeLessThan(material.prompt.indexOf("END_REVIEW_DATA n\n"));
+
+    // Many runs on a small budget: headers before steps, and what does not fit is named.
+    const many = hostRunHistoryFromJobs(Array.from({ length: 60 }, (_, index) => job(`run-${index}`, { hostRun: onManifest })), "current", now);
+    const bare = buildHostRunReviewPrompt(manifest, { nonce: "n" }).prompt.length;
+    const cut = buildHostRunReviewPrompt(manifest, { nonce: "n", history: many, limit: bare + 6000 });
+    expect(cut.complete).toBe(true);
+    expect(Buffer.byteLength(cut.prompt)).toBeLessThanOrEqual(bare + 6000);
+    expect(cut.prompt).toMatch(/\(\d+ older run\(s\) omitted for the review budget: this record is incomplete\)/);
+
+    expect(buildHostRunReviewPrompt(manifest, { nonce: "n" }).prompt).toContain("(record unavailable: none was supplied with this review)");
+    expect(buildHostRunReviewPrompt(manifest, { nonce: "n", history: { ...history, unavailable: "database is locked" } }).prompt).toContain("(record unavailable: database is locked)");
+  });
+
+  it("redacts secrets in the record's lines, which do not run now", () => {
+    const secretPlan = { ...(onManifest as Record<string, unknown>), steps: [{ name: "s", run: "echo ghp_0123456789abcdefghijklmnopqrstuvwxyzAB" }] };
+    const history = hostRunHistoryFromJobs([job("old", { hostRun: secretPlan })], "current", now);
+    const prompt = buildHostRunReviewPrompt(parseHostRunManifest(plan(onManifest))!, { nonce: "n", history }).prompt;
+    expect(prompt).not.toContain("ghp_0123456789abcdefghijklmnopqrstuvwxyzAB");
+  });
+});
+
 // Card t_81392ccb: code from reviewed repositories (server-dienste).
 describe("host door: code from reviewed repositories", () => {
   const head = "1".repeat(40);
@@ -523,6 +681,43 @@ describe("host door: code from reviewed repositories", () => {
     expect(reviewedFileStandIssue(reviewedFileFailure(ref, "executor down"))).toContain("could not be read (executor down)");
     expect(reviewedFileStandIssue(parseReviewedFileShow(JSON.stringify({ ok: true, path: "bin/werkzeug", exists: false }), ref))).toBeNull();
     expect(reviewedFileStandIssue(reviewedFileFailure(ref, `more than ${MAX_REVIEWED_FILES} files named`, true))).toBeNull();
+  });
+
+  // Merge of main into t_befe7fc7 (card t_8e0fab89): the door's record fills only
+  // the room that plan and reviewed files leave, and a record without room is named.
+  it("never lets the door's record displace a reviewed file, and names a record cut down to nothing", () => {
+    const ref = (path: string) => ({ repository: "/opt/server-dienste", path });
+    const small = { ...parseReviewedFileShow(showAnswer("deploy/x/werkzeug.service", "[Service]\nExecStart=/opt/server-dienste/bin/werkzeug"), ref("deploy/x/werkzeug.service")), reviewedBy: "job-1" };
+    const mid = { ...parseReviewedFileShow(showAnswer("bin/werkzeug", "y = 2\n".repeat(500)), ref("bin/werkzeug")), reviewedBy: "job-1" };
+    const history: HostRunHistory = {
+      now: "2026-11-20T12:00:00.000Z", hours: 24, notbetrieb: [],
+      runs: Array.from({ length: 40 }, (_, index) => ({ jobId: `run-${index}`, orderedAt: "2026-11-20T11:00:00.000Z", startedAt: null, finishedAt: null, status: "completed", engines: [], manifest })),
+    };
+    // Both files and the short "unavailable" record fit; the long record does not.
+    const withFiles = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], limit: 1_000_000 }).prompt;
+    const limit = Buffer.byteLength(withFiles);
+    const tight = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit });
+    expect(tight.complete).toBe(true);
+    expect(tight.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(tight.prompt)).toBeLessThanOrEqual(limit);
+    expect(tight.prompt).toContain("(record omitted: it does not fit the review budget; this record is incomplete)");
+    // No room at all for the record: the files still go along whole, and the fixed lines name the missing record.
+    const start = withFiles.indexOf("## Recent record of this door");
+    const record = withFiles.slice(start, withFiles.indexOf("\nEND_REVIEW_DATA n\n"));
+    const bare = limit - Buffer.byteLength(record) - 2;
+    const none = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit: bare });
+    expect(none.complete).toBe(true);
+    expect(none.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(none.prompt)).toBeLessThanOrEqual(bare);
+    expect(none.prompt).not.toContain("## Recent record of this door");
+    expect(none.prompt).toContain("Material without a section headed \"Recent record of this door\" had no room for that record: it was omitted for the review budget and is incomplete.");
+    // A larger budget: headers of the record next to both files, the rest named as omitted.
+    const some = buildHostRunReviewPrompt(manifest, { nonce: "n", files: [small, mid], history, limit: limit + 2_000 });
+    expect(some.files.map((file) => file.shown)).toEqual([true, true]);
+    expect(Buffer.byteLength(some.prompt)).toBeLessThanOrEqual(limit + 2_000);
+    // The record stays inside its room, also with the lines that name omitted steps.
+    expect(some.prompt).toContain("R1 job run-0: ordered");
+    expect(some.prompt).toMatch(/\(\d+ older run\(s\) omitted for the review budget: this record is incomplete\)/);
   });
 
   it("shows files whole within the budget; one that does not fit is named unseen, never makes the review incomplete, and its lines are no evidence", () => {

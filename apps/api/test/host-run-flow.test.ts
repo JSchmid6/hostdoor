@@ -217,6 +217,23 @@ describe("host door through the API", () => {
     expect(verifier).toContain("You run without root: state that only root may read (for example cockpit-self-update-action status");
   });
 
+  // Second review R2 of 19.11.2026 (card t_f9c7dcec): the doorkeeper of a later run
+  // reads the earlier run from the job table — times, status, steps — so a chain of
+  // windows is visible, although each plan alone passes.
+  it("gives the doorkeeper the door's recent record from the job table, without the job under review", async () => {
+    const flow = await setup({ plan: planWith(hostRun), doorkeeper: "VERDICT: pass" });
+    const first = await flow.submit();
+    expect(flow.doorkeeperPrompts[0]).toContain("## Recent record of this door (from the Cockpit's own job table, not from the requester; the last 24 h");
+    expect(flow.doorkeeperPrompts[0]).toContain("### Runs of this door\n(none)");
+    const second = await flow.submit();
+    const record = flow.doorkeeperPrompts[1].slice(flow.doorkeeperPrompts[1].indexOf("## Recent record of this door"));
+    expect(record).toContain(`R1 job ${first.id}: ordered ${first.createdAt}`);
+    expect(record).toContain("status completed");
+    expect(record).toContain("R1 name (requester's words): apt maintenance");
+    expect(record).toContain("R1.S2:L1  apt-get update && apt-get -y upgrade");
+    expect(record).not.toContain(`job ${second.id}`);
+  });
+
   // 21.10.2026, jobs ba5196ee/a86a0577: the php update ran through on the
   // host, but intent, plan and 30,000 characters of apt log made a verifier
   // prompt the broker refused; the job ended failed_execution, completed [].

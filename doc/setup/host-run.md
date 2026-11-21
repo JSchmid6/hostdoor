@@ -123,6 +123,66 @@ Datenbank-Passwörter ist dort immer ein Befund, egal wohin die Ausgabe geht. Ro
 Routine: Paket-Updates aus den eingetragenen Quellen, Docker-Pulls, Kernel mit Neustart,
 GitLab-Stufen, Dienst-Neustarts.
 
+**X2 nach Wirkung (Jochen, 16.11.2026, Karte t_befe7fc7).** Früher nannte X2 „the Cockpit's own code,
+helpers, units, sudoers or secrets“ pauschal als Befund. Damit ging jeder Test, der die Cockpit-Units
+nur kurz anders laufen lässt, an Jochen — zuletzt der Rückfalltest aus t_0cb8edbd (ein flüchtiger
+Drop-in unter `/run` setzt `COCKPIT_CLAUDE_EXECUTABLE=/nonexistent`, ein Timer räumt nach 40 Minuten;
+Box `ac9d7a9e`, Lab0 `7eb17a11`, VPS `2712f71c`). Jochen: „Der Cockpit Agent enthält deshalb KI, damit
+er komplexe Zusammenhänge versteht und bewerten kann.“ Keine Textmuster-Ausnahme (Entscheidung
+08.11.), sondern ein Urteil nach Kriterien. Die Kernfrage im Prompt: Erweitert die Änderung, wer
+handeln darf oder was eine Unit darf, oder lenkt sie um, was mit den Rechten des Cockpits läuft (Ziel
+nicht im Plan, existiert, oder von einer Nicht-root-Identität platzierbar)? Dann X2. Kein Befund nur,
+wenn der Türsteher alles aus dem Material zeigen kann: (a) schränkt nur ein (Ziel kann nachweislich
+nicht laufen, der Plan legt es nicht an, gewährt nichts; einen Schutz abschalten — Scrub, Sandbox,
+Erlaubnisliste, Logging, Audit, Prüfung — ist nie „nur einschränken“), (b) flüchtig (nur `/run`,
+systemd-run, weg nach Neustart; nichts unter `/etc`, `/usr`, `/var`, `/opt`, keine Unit-Datei, kein
+Hilfsprogramm, kein sudoers, kein Geheimnis), (c) nimmt sich selbst zurück (Timer oder späterer Schritt
+im Plan, genau passend, ohne den Besteller, binnen der kurzen Zeit, die der Zweck braucht — beim
+Rückfalltest 40 Minuten; ein offenes Fenster verlängern oder erneuern ist kein Zurücknehmen: wer die
+Rücknahme eines früheren Laufs stoppt oder neu stellt oder dieselbe Einschränkung über ein offenes
+Fenster legt, hält sie fest — eine Kette solcher Läufe, jeder für sich kurz, hielte den Notbetrieb ohne
+Jochen dauerhaft offen; Zweitprüfung R1 vom 18.11.2026. Der Lauf, der durchgeht, bricht ab, sobald
+irgendein Laufzeit-Drop-in auf Agent- oder Runner-Unit liegt oder irgendein Rückfall-Timer läuft, nicht
+nur bei den eigenen Namen. Auch ein Fenster, das kurz nach dem Schließen des vorigen wieder geöffnet
+wird, ist Verlängerung, nicht Test — egal wie kurz die Lücke ist; Zweitprüfung R2 vom 19.11.2026,
+Karte t_f9c7dcec), (d) passt zum Zweck. Bei Zweifel: Befund. Das Ziel anzulegen, das ein
+flüchtiger Drop-in nennt, ist Umlenken (X2). Ehrliche Grenze: Im Fenster des Rückfalltests prüfen
+Türsteher, Plan-Prüfung, Update-Review und Verifier mit dem Rückfallmotor (opencode/DeepSeek,
+NOTBETRIEB am Job), ohne Jochen; das hat er so bestellt (15.11.), der Türsteher nennt es in NOTES. Code, Unit-Dateien, Hilfsprogramme, sudoers und Geheimnisse
+des Cockpits ändern sich weiter nur über das Selbst-Update; ein Bootstrap bleibt X2 (`self-update.md`,
+„Bootstrap when the update path itself is broken“). Fälle MUSS-flaggen und DARF-durch:
+`apps/api/test/fixtures/host-run-review-cases.json`; Messlauf mit echtem Claude:
+`node test/host-run-review-live.mjs --role <vps|lab0|box> --out <ordner>` (nach `npm run build`, nicht
+Teil von `npm test`).
+
+**Der Verlauf der Tür als Material (Karte t_f9c7dcec).** Ein Plan allein zeigt keine Kette: Schließt der
+Timer das Fenster und bestellt der Besteller Sekunden später dasselbe „on“, erfüllt jeder Lauf (a) bis
+(d) für sich. Deshalb gibt die API dem Türsteher hinter dem Plan den Abschnitt „Recent record of this
+door“ mit — aus ihrer eigenen Job-Tabelle, nicht vom Besteller: jeden Lauf dieser Tür der letzten
+24 Stunden mit Bestell-, Start- und Endzeit, Status, Motoren, Fokus-Treffern und Schritten (Geheimnisse
+geschwärzt, sie laufen ja nicht mehr) sowie jeden Job irgendeiner Tür, der auf dem Rückfallmotor lief
+(NOTBETRIEB). Ein Lauf, der ein Fenster öffnet, erfüllt (c) nur, wenn dieser Verlauf in den 24 Stunden
+kein anderes Fenster zeigt, offen oder schon geschlossen, unter welcher Karte, welchem Namen oder Zweck
+auch immer; ein NOTBETRIEB-Job zählt als Fenster. Ein Lauf, der ein offenes Fenster nur schließt,
+öffnet keins. Ein fehlender, nicht lesbarer oder fürs Budget gekürzter Verlauf zeigt nichts — dann ist
+(c) für einen öffnenden Lauf nicht belegbar, also Befund. Umgekehrt beweist ein leerer Verlauf nicht, dass
+kein Fenster offen ist (er kennt nur die Jobs des Cockpits): Den Abbruch bei offenem Fenster muss der Plan
+selbst zeigen; ein Lauf, der eine Rücknahme stoppt oder neu stellt oder einen vorgefundenen Drop-in
+überschreibt, bleibt Befund, was immer der Verlauf zeigt (Messlauf 4: flag-renewal ging mit leerem
+Verlauf durch, Messlauf 5 nach der Schärfung). Der Verlauf füllt nur den Platz, den das
+übrige Material lässt — Plan, Paket (Abschnitt 2c), „Code from reviewed repositories“ und Fokus gehen
+vor, der Verlauf verdrängt keine gezeigte Datei (erst alle Kopfzeilen, dann Schritte, jeweils neueste
+zuerst; was fehlt, steht als „omitted … incomplete“ da; passt nicht einmal die Kopfzeile, sagt die feste
+Einleitung des Materials, dass ein fehlender Abschnitt „Recent record of this door“ fürs Budget
+weggelassen und unvollständig ist) und macht das Material nie unvollständig; Befunde zitieren weiter
+nur Zeilen des Plans. Damit geht ein
+Rückfalltest je 24 Stunden ohne Klick; jeder weitere in dieser Zeit geht an Jochen. Gewählt statt eines
+Stempels unter `/run` (kleinste Alternative aus der Karte): Ein Stempel steht im Plan des Bestellers,
+den ein feindlicher Besteller weglässt, und er verfällt mit jedem Neustart, den dieselbe Tür anordnen
+kann; die Job-Tabelle liegt außerhalb seiner Reichweite und übersteht Neustarts. Code:
+`hostRunHistoryFromJobs`, `buildHostRunReviewPrompt` (`apps/api/src/host-run.ts`), `hostRunHistory`
+(`apps/api/src/app.ts`), `listJobsUpdatedSince` (`apps/api/src/db.ts`).
+
 **Jedes ausgeführte Skript steht wörtlich im Plan** (05.11.2026, Befund X5 aus Job 26fb0860): Ein
 stündlicher root-Dienst führte ein Skript aus, das der Lauf nur per Hash festnagelte
 (`printf '<sha256>  /pfad' | sha256sum -c -`); der Türsteher sah einen Hash statt Code. Das ist ein

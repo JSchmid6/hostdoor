@@ -100,6 +100,8 @@ import {
 import {
   buildHostRunReviewPrompt,
   classifyHostRunFocus,
+  HOST_RUN_HISTORY_HOURS,
+  hostRunHistoryFromJobs,
   hostRunManifestHash,
   hostRunPlannerContract,
   hostRunPolicy,
@@ -120,6 +122,7 @@ import {
   reviewedRepositoryPaths,
   stateStepKinds,
   verifyHostRunFindings,
+  type HostRunHistory,
   type HostRunManifest,
   type HostRunReviewOutcome,
   type ReviewedFile,
@@ -2287,7 +2290,7 @@ export async function createApp(options: AppOptions = {}) {
       return { manifestHash: hostRunManifestHash(manifest), complete: false, missing: [`package: ${loaded.problem}`], focus: classifyHostRunFocus(manifest) };
     }
     const pkg = loaded?.pkg ?? null;
-    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, pkg, files: await readReviewedFiles(jobId, manifest) });
+    const material = buildHostRunReviewPrompt(manifest, { role: config.instanceRole ?? null, pkg, files: await readReviewedFiles(jobId, manifest), history: hostRunHistory(jobId) });
     const outcome: HostRunReviewOutcome = { manifestHash: hostRunManifestHash(manifest), complete: material.complete, missing: material.missing, focus: material.focus, reviewedFiles: material.files };
     if (!material.complete) return outcome;
     outcome.reviewPath = path.join(proposalDir, `${jobId}-host-run-review.md`);
@@ -2298,6 +2301,18 @@ export async function createApp(options: AppOptions = {}) {
       outcome.reviewerError = error instanceof Error ? error.message : "reviewer failed";
     }
     return outcome;
+  }
+
+  // The door's recent record for the doorkeeper (X2 (c), card t_f9c7dcec): the
+  // job table of the last 24 h. A read error goes to the doorkeeper as an
+  // unavailable record, which shows no window; it never stops other runs.
+  function hostRunHistory(jobId: string): HostRunHistory {
+    const now = new Date();
+    try {
+      return hostRunHistoryFromJobs(database.listJobsUpdatedSince(new Date(now.getTime() - HOST_RUN_HISTORY_HOURS * 3_600_000).toISOString()), jobId, now);
+    } catch (error) {
+      return { now: now.toISOString(), hours: HOST_RUN_HISTORY_HOURS, runs: [], notbetrieb: [], unavailable: error instanceof Error ? error.message.slice(0, 200) : "read failed" };
+    }
   }
 
   function hostRunDeadline(manifest: HostRunManifest, startedAt: number): number {
