@@ -147,6 +147,8 @@ test("executor broker admits the typed dienste-update actions with the same stri
     { action: "dienste.update", target: selfSha, diffSha256: reviewedHash },
     { action: "dienste.status", target: "state" },
     { action: "dienste.diff", target: selfSha },
+    { action: "dienste.show", target: "bin/ausgangs-sperre" },
+    { action: "dienste.show", target: "deploy/ausgangs-wache/ausgangs-sperre.service" },
   ]) {
     const payload = { ...selfBase, ...partial };
     assert.deepEqual(validateRequest({ payload, signature: sign(payload) }, validAt), payload);
@@ -160,6 +162,15 @@ test("executor broker admits the typed dienste-update actions with the same stri
     { action: "dienste.diff", target: selfSha, diffSha256: reviewedHash },
     { action: "dienste.status", target: "all" },
     { action: "dienste.restart", target: "state" },
+    { action: "dienste.show", target: "/etc/shadow" },
+    { action: "dienste.show", target: "../etc/shadow" },
+    { action: "dienste.show", target: ".git/config" },
+    { action: "dienste.show", target: "bin/.hidden" },
+    { action: "dienste.show", target: "bin/a b" },
+    { action: "dienste.show", target: "bin/x --force" },
+    { action: "dienste.show", target: "" },
+    { action: "dienste.show", target: "a/".repeat(9) + "b" },
+    { action: "dienste.show", target: "bin/werkzeug", diffSha256: reviewedHash },
   ];
   for (const partial of rejected) {
     const payload = { ...selfBase, ...partial };
@@ -176,6 +187,17 @@ test("executor broker admits the general host door with a host-run manifest and 
   assert.deepEqual(validateRequest({ payload: run, signature: sign(run) }, validAt), run);
   const status = { ...hostBase, action: "host.status", target: "0b9c1d2e-job_1.a" };
   assert.deepEqual(validateRequest({ payload: status, signature: sign(status) }, validAt), status);
+});
+
+test("executor broker passes a host run's package through (the helper checks the bytes)", () => {
+  const run = { ...hostBase, action: "host.run", manifest: { version: "cockpit-host-run/v1", steps: [{ name: "x", run: "true" }] }, envelope: { digest: "e".repeat(64) }, package: { files: [{ path: "tool/run.sh", content: "ZWNobyBoaQo=" }] } };
+  assert.deepEqual(validateRequest({ payload: run, signature: sign(run) }, validAt), run);
+  for (const pkg of [null, { files: "x" }, { files: [{ path: "a" }] }, { files: Array.from({ length: 65 }, () => ({ path: "a", content: "" })) }]) {
+    const bad = { ...run, package: pkg };
+    assert.throws(() => validateRequest({ payload: bad, signature: sign(bad) }, validAt), /host run package is malformed/);
+  }
+  const elsewhere = { ...hostBase, action: "host.status", target: "job-1", package: { files: [] } };
+  assert.throws(() => validateRequest({ payload: elsewhere, signature: sign(elsewhere) }, validAt), /package is only valid for host.run/);
 });
 
 test("executor broker rejects incomplete host runs and invalid job ids", () => {

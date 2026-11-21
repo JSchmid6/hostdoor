@@ -40,11 +40,11 @@ The Hermes token file is `hermes:hermes` mode `0600` because Hermes must present
 - `deploy/helpers/cockpit-email-archive-deploy` (fixed, approval-gated build/push of the reviewed clean Email Archive commit to the existing private registry)
 - `deploy/helpers/cockpit-gitlab-runner-rootless-dind` (fixed, approval-gated enablement of only GitLab's allowlisted rootless DinD services while jobs remain unprivileged)
 - `deploy/helpers/cockpit-email-archive-auto-deploy` plus its systemd service
-  and timer (polls the private GitLab registry with a read-only deploy token,
+  and timer (polls the Forgejo container registry (`registry-bot/email-archive`) with a read-only `read:package` token,
   mirrors only the promoted immutable image into the private AppAPI registry,
   updates through AppAPI, verifies lifecycle state, and rolls back through the
   same supported path)
-- `deploy/helpers/install-email-archive-auto-deploy` is a one-time,
+- `deploy/helpers/install-email-archive-auto-deploy` is the one-time GitLab-era,
   non-overwriting bootstrap. It creates exactly one project-scoped
   `read_registry` deploy token, stores it root-only, installs the reviewed
   helper/unit/timer files, and enables the timer. It refuses every pre-existing

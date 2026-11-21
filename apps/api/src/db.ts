@@ -731,6 +731,16 @@ export class CockpitDatabase {
     return rows.map((row) => this.mapJob(row));
   }
 
+  // Finished jobs of a subject whose record names a commit (host door, card
+  // t_81392ccb: which job installed and reviewed a stand), newest first.
+  listCompletedJobsNaming(subjectId: string, sha: string, limit = 20): JobRecord[] {
+    if (!/^[a-f0-9]{40}$/.test(sha)) return [];
+    const rows = this.database
+      .prepare("SELECT * FROM jobs WHERE subject_id = ? AND status = 'completed' AND instr(output_json, ?) > 0 ORDER BY datetime(updated_at) DESC LIMIT ?")
+      .all(subjectId, sha, limit) as JobRow[];
+    return rows.map((row) => this.mapJob(row));
+  }
+
   listRecentJobs(subjectId: string, limit = 3): JobRecord[] {
     const rows = this.database
       .prepare("SELECT * FROM jobs WHERE subject_id = ? ORDER BY datetime(updated_at) DESC LIMIT ?")

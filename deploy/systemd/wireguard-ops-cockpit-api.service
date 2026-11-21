@@ -18,6 +18,10 @@ EnvironmentFile=/opt/wireguard-ops-cockpit/.env
 # Rolle der Instanz (vps|lab0) für den Türsteher-Text; root-eigen vom Deploy gelegt.
 # Optional (-): ohne Datei liest der Türsteher den strengsten Text (VPS).
 EnvironmentFile=-/etc/wireguard-ops-cockpit/instance-role.env
+# Paketquelle der Host-Tür (doc/setup/host-run.md 2c): Forgejo-URL, Lese-Token,
+# CA, erlaubte Besitzer. Root-eigen 0600, die Agent-Units sehen das Verzeichnis
+# nicht. Optional (-): ohne Datei stoppt ein Plan mit Paket als unvollständig.
+EnvironmentFile=-/etc/wireguard-ops-cockpit/forgejo.env
 ExecStart=/opt/node-v22.23.4-linux-x64/bin/node /opt/wireguard-ops-cockpit/apps/api/dist/index.js
 Restart=always
 RestartSec=5

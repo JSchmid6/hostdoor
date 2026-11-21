@@ -182,9 +182,13 @@ auch immer; ein NOTBETRIEB-Job zählt als Fenster. Ein Lauf, der ein offenes Fen
 kein Fenster offen ist (er kennt nur die Jobs des Cockpits): Den Abbruch bei offenem Fenster muss der Plan
 selbst zeigen; ein Lauf, der eine Rücknahme stoppt oder neu stellt oder einen vorgefundenen Drop-in
 überschreibt, bleibt Befund, was immer der Verlauf zeigt (Messlauf 4: flag-renewal ging mit leerem
-Verlauf durch, Messlauf 5 nach der Schärfung). Der Verlauf füllt nur den Platz, den der Plan
-lässt (erst alle Kopfzeilen, dann Schritte, jeweils neueste zuerst; was fehlt, steht als „omitted“ da)
-und macht das Material nie unvollständig; Befunde zitieren weiter nur Zeilen des Plans. Damit geht ein
+Verlauf durch, Messlauf 5 nach der Schärfung). Der Verlauf füllt nur den Platz, den das
+übrige Material lässt — Plan, Paket (Abschnitt 2c), „Code from reviewed repositories“ und Fokus gehen
+vor, der Verlauf verdrängt keine gezeigte Datei (erst alle Kopfzeilen, dann Schritte, jeweils neueste
+zuerst; was fehlt, steht als „omitted … incomplete“ da; passt nicht einmal die Kopfzeile, sagt die feste
+Einleitung des Materials, dass ein fehlender Abschnitt „Recent record of this door“ fürs Budget
+weggelassen und unvollständig ist) und macht das Material nie unvollständig; Befunde zitieren weiter
+nur Zeilen des Plans. Damit geht ein
 Rückfalltest je 24 Stunden ohne Klick; jeder weitere in dieser Zeit geht an Jochen. Gewählt statt eines
 Stempels unter `/run` (kleinste Alternative aus der Karte): Ein Stempel steht im Plan des Bestellers,
 den ein feindlicher Besteller weglässt, und er verfällt mit jedem Neustart, den dieselbe Tür anordnen
@@ -199,6 +203,70 @@ X5-Befund des Türstehers („a script the run executes but does not write liter
 pin shows you the hash, not the code“). Der Weg ist das Muster der Units: Inhalt per
 `cat > /pfad <<'EOF' … EOF` oder `install -m 0755 /dev/stdin /pfad <<'EOF' … EOF` in den Lauf, eine
 Hash-Prüfung danach ist erlaubt.
+
+### Code aus geprüften Repos (17.11.2026, Karte t_81392ccb)
+
+Auslöser: Job 62c0fd6e (Ausgangs-Sperre Schritt 1, 15.11.2026). Der Plan rief
+`/usr/bin/python3 /opt/server-dienste/bin/ausgangs-sperre …` und installierte zwei Units aus
+`/opt/server-dienste/deploy/…`. Der Türsteher sah nur die Namen — sein Sandkasten darf das
+root-eigene Repo (0750) nicht lesen, „Permission denied“ — und meldete X5/X2. Jochen musste klicken,
+obwohl die eigene `dienste.update`-Prüfung des Cockpits genau diesen Stand freigegeben hatte (Job
+a6c83679, Commit 719ea9db). Jochen (15.11.): „Wollten wir nicht dafür sorgen, dass der Prüfer die
+Skripte auch bekommt?“
+
+Seitdem liest das Cockpit diese Dateien selbst und legt sie dem Türsteher vor:
+
+- **Welche Dateien:** jeder Pfad unter einem geprüften Repo, den Schritte, Prüfschritte oder Rückweg
+  nennen (`reviewedRepositoryPaths`, Liste `REVIEWED_REPOSITORIES`, heute nur `/opt/server-dienste`),
+  höchstens 8 je Plan (`MAX_REVIEWED_FILES`). Das Herauslesen ist Material, nie ein Durchlass: ein Pfad,
+  den es übersieht (zusammengesetzt, versteckt), bleibt für den Türsteher ungesehener Code — X5 wie
+  bisher. Weitere Repos, deren Installation das Cockpit selbst prüft, kommen mit einem Eintrag dazu.
+- **Wie gelesen:** über den Executor (`dienste.show <pfad>`) und den vorhandenen Helfer
+  `cockpit-dienste-update-action show <pfad>` als root, nur lesend: nur eine reguläre Datei unter dem
+  Repo, kein Symlink auf dem Weg, keine Komponente mit Punkt am Anfang (kein `.git`, kein `..`); er
+  liefert sha256, Größe, den installierten HEAD, ob die Datei Byte für Byte dem Blob in HEAD gleicht
+  und ob der versionierte Baum sauber ist. Den Inhalt (höchstens 64 KiB, Schnitt gekennzeichnet)
+  liefert er nur, wenn die Datei Byte für Byte dem Blob in HEAD gleicht, und dann aus dem Blob selbst
+  (`git cat-file blob`), nicht aus der Arbeitsdatei: der Helfer zeigt, was git ohnehin hält (wie
+  `dienste.diff`). Eine lokal geänderte oder unversionierte Datei, ein Hardlink nach außen oder ein
+  Symlink, der nach der Prüfung untergeschoben wird, liefert keinen fremden Inhalt. Alle git-Aufrufe
+  laufen ohne optionale Sperren (`GIT_OPTIONAL_LOCKS=0`), ohne `core.fsmonitor` und Untracked-Cache,
+  `status` mit `--ignore-submodules`: als root führt der Lesepfad kein Kommando aus der Repo-Konfiguration
+  aus und frischt den Index nicht auf (Zweitprüfung t_8884b442, H1/H2).
+- **Nachweis „geprüfter Stand“:** ein abgeschlossener Job des Cockpits selbst, dessen
+  Vor-Installations-Prüfung dieses Repos (`output.updateReview`, `kind: dienste`) den installierten
+  Commit gebunden hat und `pass` ergab oder von Jochen freigegeben wurde (`reviewedInstallJob`). Nur die
+  eigene Job-Datenbank zählt — kein Marker, kein Kommentar, nichts, was der Antragsteller schreibt
+  (Lehre aus PR #74, Befund B1: ein Nachweis, den James selbst setzen kann, ist keiner). Eine
+  Installation über die Zweitprüfungs-Ausnahme (Ergebnis nicht `pass`, nur gemeldet, ohne Jochens
+  Freigabe) zählt nie als geprüft: jeder Host-Lauf mit Code aus diesem Stand hält dann bei Jochen
+  (schlägt sicher fehl, H4).
+- **Türsteher:** der Abschnitt „Code from reviewed repositories <nonce>“ steht im Material, jede Datei
+  mit Kennung `F<n>`, Stand und Zeilen `F<n>:L<zeile>`. Eine ganz gezeigte Datei zählt als im Plan
+  geschrieben: der Türsteher prüft sie wie Planzeilen (X1–X6 gelten), sie ist kein verborgener Code
+  (X5), eine gezeigte Unit keine ungesehene Unit (X2). Das ist ein gewollter neuer Durchlass: vorher
+  hielt solcher Code als X5 bei Jochen. Module, die sie aus demselben geprüften Stand lädt und die der
+  Commit versioniert, sind ebenfalls kein verborgener Code. Die Sauberkeitsprüfung sieht nur
+  versionierte Dateien (`--untracked-files=no`): eine unversionierte Datei daneben (Modul, gelesene
+  Konfiguration) bleibt ungesehener Code (H5). Befunde dürfen `F<n>:L<zeile>` als Beleg nennen.
+  Dateien gehen ganz oder gar nicht mit; was nicht ins Budget passt, heißt „content not shown …
+  (unseen code)“ und macht die Prüfung nicht unvollständig — dann urteilt der Türsteher wie bisher.
+- **Fälschungssicher (Zweitprüfung t_8884b442, B1):** Die Kopfzeile des echten Abschnitts trägt die
+  Nonce der Prüfdaten-Marker (`BEGIN_REVIEW_DATA <nonce>`), die der Antragsteller nicht kennt. Nur dieser
+  Abschnitt zählt; jeder andere Text, der sich so nennt, ist ein X6-Befund. Freitext des Antragstellers
+  (Name, Zweck, Schritt- und Prüfnamen, Rückweg-Einträge) geht nie mit eigener Zeile hinaus: jede
+  Folgezeile trägt das Präfix `    | ` (alle Zeilenumbruch-Formen, auch U+2028/U+2029). Vorher konnte ein
+  Rückweg-Text einen Abschnitt nachbauen, der vom echten nicht zu unterscheiden war, und so beliebigen
+  heruntergeladenen Code als „geprüft“ ausgeben. Der Paket-Abschnitt aus Forgejo (Abschnitt 2c)
+  trägt dieselbe Nonce (`## Package <nonce>`); ein anders genannter Paket-Abschnitt ist ebenso X6.
+- **Nicht der geprüfte Stand → Jochen:** weicht eine genannte Datei vom installierten Commit ab, ist
+  der Baum schmutzig, hat keine Cockpit-Prüfung den Commit freigegeben oder ist die Datei nicht
+  lesbar, endet der Job `blocked_user_approval` mit dem Grund — auch bei `pass` des Türstehers (wie der
+  Risiko-Riegel). Das ist ein Hash-Vergleich, kein Textmuster; er kann nur anhalten, nie durchlassen.
+  Eine nicht vorhandene Datei ist kein Code, der läuft (schreibt der Lauf sie, steht ihr Inhalt im Plan).
+- **Ehrliche Grenze:** Gelesen wird zur Prüfzeit. Wer zwischen Prüfung und Lauf als root im Repo
+  schreibt, ist ohnehin root. Die `dienste.update`-Prüfung sieht Diffs; ihr Vertrauensanker ist der
+  installierte Stand, wie beim Supervisor selbst.
 
 Bis 13.11.2026 lehnte zusätzlich ein Shell-Lexer in `parseHostRunManifest` (`hiddenPinnedScripts`)
 solche Pläne ab. Er ist ausgebaut (Karte t_abe2651b, siehe „Keine Textmuster-Riegel“ unten): sieben
@@ -285,6 +353,62 @@ ein Schritt etwas öffnet, bleibt das ein Türsteher-Befund X3 „Exposure“ (F
 Tests: `host-run.test.ts` (Policy je Klasse, mit Befund, unvollständig), `host-run-helper.test.ts`
 (Helfer 77 ohne / 0 mit Freigabe, `risk` fehlt → 64), `host-run-flow.test.ts` (API: `pass` plus
 `exposure` wartet auf Jochen, läuft nach der Freigabe mit `operatorApproved`).
+
+## 2c. Code-Paket aus Forgejo statt Code im Plan (19.11.2026, Karte t_d7d34cf5)
+
+Anlass: Der Einbau von `dienstwart` auf Lab0 (Jochen/lab0-infra PR 16) passte nicht in einen Plan.
+Der Planer nimmt höchstens 30 000 Zeichen; der Code kam deshalb in acht Stück-Jobs auf den Host
+(`/root/dienstwart-paket/.teile`), und der Einbau-Job d84ae668 rief `install.sh` auf, das nur noch per
+sha256 im Plan stand. Der Türsteher meldete zu Recht X5 („root runs an installer whose code is not in
+the plan“) und Jochen musste klicken. Jochen, 18.11.2026: „Wir könnten solche Sachen über ein Repo
+zur Verfügung stellen.“
+
+Der Weg: Das Manifest bekommt ein Feld `package` mit genau drei Angaben:
+
+```json
+"package": {"repo": "Jochen/lab0-infra", "commit": "<40 hex>", "files": [{"path": "dienstwart/install.sh", "sha256": "<64 hex>"}]}
+```
+
+- **Wer holt:** die Cockpit-API selbst, nicht der Besteller. Sie liest jede Datei über die Forgejo-API
+  (`/repos/<repo>/raw/<pfad>?ref=<commit>`) mit einem Lese-Token aus
+  `/etc/wireguard-ops-cockpit/forgejo.env` (`COCKPIT_FORGEJO_URL`, `COCKPIT_FORGEJO_TOKEN`,
+  `COCKPIT_FORGEJO_CA`, `COCKPIT_PACKAGE_OWNERS`; root-eigen 0600, von der API-Unit als optionales
+  EnvironmentFile gelesen, für die Agent-Units unsichtbar). Nur Repos der Besitzer in
+  `COCKPIT_PACKAGE_OWNERS`, nur diese eine Forgejo-Adresse, kein freier URL-Abruf.
+- **Was hart stoppt (unvollständiges Material, `blocked_prerequisite`, nichts läuft, keine Frage an
+  Jochen):** keine Paketquelle eingerichtet, Besitzer nicht erlaubt, Datei nicht lesbar, sha256
+  weicht ab, Datei kein UTF-8-Text oder mit einem Steuerzeichen außer Tab und LF (auch CR: bash endet
+  eine Zeile nur am LF, ein Leser, der das CR wegließe, sähe in `: \<CR><LF>` eine Fortsetzung und
+  hielte die nächste Zeile für harmlos — Zweitprüfung PR #120; der Helfer weist dasselbe ab), mehr
+  als 500 Kommentare am PR, Paket über 200 000 Bytes oder 64 Dateien, und
+  wie bisher: Prüfmaterial samt Paket über dem Prüffenster (90 000 Bytes). Das ist keine Textregel,
+  sondern Integrität: ohne die geprüften Bytes gibt es nichts zu beurteilen.
+- **Was der Türsteher sieht:** jede Datei ganz, Zeile für Zeile (`P1:L1` …), und die Herkunft als
+  Zeilen `P0:L…`, die die API selbst in Forgejo gelesen hat: ob der Commit der Merge-Commit eines
+  gemergten PR in den Standardzweig ist, dessen geprüfter Head, ob der Baum gleich ist, und die
+  Kommentare des PR. Seine Anweisung: Code aus `$COCKPIT_PACKAGE` ist gezeigter Code, kein
+  versteckter, und wird wie die Schritte beurteilt. Fehlt die Herkunft (kein gemergter PR in den
+  Standardzweig) oder ein Freigabe-Kommentar der Zweitprüfung zum gemergten Head, ist das ein
+  X5-Befund an der `P0`-Zeile — ob ein Kommentar eine Freigabe ist, entscheidet das Modell, kein
+  Textmuster. Ein Befund bleibt ein Befund und geht an Jochen.
+- **Was ausgeführt wird:** Vor dem Start holt die API das Paket erneut (die Freigabe kann Stunden
+  nach der Prüfung kommen) und reicht die Bytes über den Executor an `cockpit-host-run start`. Der
+  Helfer prüft jede Datei gegen die sha256 im signierten Manifest (fehlt eine, kommt eine dazu oder
+  weicht eine ab: Exit 77, kein Laufverzeichnis), legt sie root-eigen unter
+  `/var/lib/wireguard-ops-cockpit/host-runs/<job>/package/` ab (Verzeichnisse 0700, Dateien 0600),
+  prüft vor dem ersten Schritt (auch nach einem Neustart) noch einmal und gibt den Schritten und
+  Prüfungen `COCKPIT_PACKAGE` mit. Ein Schritt ruft also `bash "$COCKPIT_PACKAGE/dienstwart/install.sh" einrichten`.
+
+Was sich nicht ändert: Schloss (das Manifest samt Paketliste ist im `manifestHash`), Netz, Backup- und
+Risiko-Riegel. Ein neuer Lauscher bleibt `exposure` und damit Jochens Klick (2b). Der Planer muss das
+Paket nicht abschreiben: James schreibt das Manifest in den Intent (Abschnitt 5), der Planer-Vertrag
+bleibt unverändert (er ist schon so knapp an der 30 000-Zeichen-Grenze, dass jede Zeile dort einen Plan
+verdrängt).
+
+Ehrliche Grenzen: Der Freigabe-Kommentar im PR kann mit dem Token des Agenten geschrieben werden
+(wie der Marker der Zweitprüfung beim Selbstupdate); er ist ein öffentlicher Beleg zum Commit, kein
+zweiter Mensch. Die eigentliche Sicherung bleibt, dass der Türsteher jede Zeile liest. Ein Diff gegen
+den vorigen Stand zeigt die API nicht — sie zeigt immer die ganzen Dateien.
 
 ## 3. Tür
 
@@ -685,7 +809,8 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
 - INCOMPLETE ist nie ein Durchlass. James klärt die Ursache (Einsammeln reparieren, Lauf
   wiederholen) und reicht neu ein; kommt er nicht weiter, fragt er Jochen selbst.
 - Harte Blocker, die unabhängig vom Prüfergebnis zu Jochen gehen: Risiko-Riegel (Abschnitt 2b, erklärtes `exposure`/`data_loss`/
-  `identity_or_secret`, nur `host.run`); für die typisierten Türen die Plan-Policy (`evaluatePlanPolicy`: Risikozone rot, nicht autorisierte Capability, `shell.exception`, `borg.repair`).
+  `identity_or_secret`, nur `host.run`); Code aus einem geprüften Repo, der nicht der geprüfte Stand ist
+  (Abschnitt 2, „Code aus geprüften Repos“, nur `host.run`); für die typisierten Türen die Plan-Policy (`evaluatePlanPolicy`: Risikozone rot, nicht autorisierte Capability, `shell.exception`, `borg.repair`).
 - Die Sicherungskette vor einem verändernden Lauf (borg-Prüfung, Snapshot) hängt nicht an dieser
   Matrix und bleibt unverändert.
 - **Zweitprüfung (Jochen, 07.11.2026, „ja alles“, Punkt 4b), nur Selbstupdate:** Prüft das Cockpit
@@ -726,7 +851,18 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   ein lesender Lauf räumt nach einem gescheiterten apt-Schritt nicht auf, meldet nur `dpkg --audit`).
 - `apps/api/test/state-steps.test.ts`: die Erkennung und die Kennzeichnung im Manifest.
 - `apps/api/test/host-run.test.ts`: Manifest, Fokus (der `/etc/apt`-Fall stoppt nicht mehr),
-  Prompt, Belegprüfung, Entscheidung, Ergebnis.
+  Prompt, Belegprüfung, Entscheidung, Ergebnis; Code aus geprüften Repos (Pfade, Helfer-Antwort,
+  Nachweis aus der Job-Datenbank, Stand-Gründe, Budget, Belege auf `F<n>:L<zeile>`).
+- `apps/api/test/host-run-flow.test.ts`, Block „code from reviewed repositories (job 62c0fd6e)“:
+  Rücktest mit dem Manifest von Job 62c0fd6e — gleicher Stand wie die freigegebene `dienste.update`-
+  Prüfung → `pass` startet den Lauf ohne Klick; abweichender Hash, schmutziger Baum, keine freigegebene
+  Prüfung oder unlesbar → `blocked_user_approval` trotz `pass`.
+- `apps/api/test/host-run-package.test.ts` (Abschnitt 2c): Manifest-Feld `package`, Laden aus
+  Forgejo mit Attrappe (`test/fixtures/forgejo-package.ts`): sha256, fremder Besitzer, fehlende
+  Quelle, Binärdatei, ungemergter Commit als Herkunftszeile, Material mit `P`-Zeilen, belegte Befunde
+  auf Paket- und Herkunftszeilen. Im Helfer-Test (`describe("cockpit-host-run: package")`): Ablage
+  0700/0600, `$COCKPIT_PACKAGE` im Schritt, falsche sha256, fehlende/zusätzliche Datei, Pfad aus dem
+  Paketverzeichnis heraus.
 - `apps/api/test/host-run-flow.test.ts`: der Weg durch die API mit Brokern als Fakes — `pass`
   startet trotz `*.save`-Pfad und borg-Repair-Zeile (kein Regel-Stopp), ein belegter Befund geht
   an Jochen (`gatePassed` fehlt) und nach der Freigabe läuft genau dieser Plan (`operatorApproved`,
@@ -735,7 +871,9 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   Runner.
 - `apps/api/test/host-run-resume.test.ts`: API-Neustart während eines Laufs (Broker als Fakes),
   auch wenn die API zwischen Start und Startmarke starb (`hostRunRequestedAt`).
-- `apps/executor-broker/test/index.test.mjs`: `host.run`/`host.status`.
+- `apps/executor-broker/test/index.test.mjs`: `host.run`/`host.status`, `dienste.show` (Pfadform).
+- `sudo bash test/cockpit-dienste-update-action.test.sh`: `show <pfad>` gegen ein echtes git-Repo
+  (sauber, geändert, unversioniert ohne Inhalt, Schnitt bei 64 KiB, Symlink, `.git`, `..`).
 - `apps/api/test/host-snapshot.test.ts`: `cockpit-host-snapshot` selbst — vollständige, private
   Kopie (`/etc`-Archiv gelesen, Paket- und Unit-Listen, Manifest zuletzt), Rotation nur der eigenen
   Namensform, Name/Bestand/Platz verweigert, kein halber Snapshot bei einem Fehler.
