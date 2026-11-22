@@ -117,6 +117,10 @@
 #     automatischem Backup davor. Ein Re-Run kann TLS/Port nicht mehr verlieren.
 #   - Alle Secrets entstehen auf der Kiste (root, Modus 0600) — dieses Skript
 #     enthält keine Secrets. Das Admin-Passwort wird NICHT auf stdout gedruckt.
+#   - Rechte von /etc/wireguard-ops-cockpit setzt jeder Lauf (22.11.2026, Karte
+#     t_6f07b80b, Block env-dir-rechte): Ordner 0710 root:wgops, *.env 0600 root:root,
+#     forgejo-ca.crt 0640 root:wgops; vorher eine stat-Kopie als Rückweg, vor dem
+#     Neustart die Vorprüfung als wgops, danach /api/health binnen 60 s.
 #   - Idempotent genug für Wiederholung: vorhandene .env-Dateien bleiben erhalten,
 #     Code wird per git auf den Pin-Stand gebracht und neu gebaut; nginx wird am
 #     Ende neu geladen, die vier Cockpit-Dienste werden neu gestartet (außer
@@ -153,6 +157,69 @@ NODE_PKG_URL="https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz"
 
 log()  { printf '\n=== %s ===\n' "$*"; }
 die()  { printf '\nFEHLER: %s\n' "$*" >&2; exit 1; }
+
+# Rechte von /etc/wireguard-ops-cockpit (Karte t_6f07b80b; Ausfälle Lab0 19.11. und
+# 19.–22.11.2026: dieses Skript setzte den Ordner bei jedem Lauf auf 0700 root:root, die
+# API (wgops) konnte die Forgejo-CA nicht mehr lesen und startete im Kreis neu, 502).
+# Soll, bei jedem Lauf gesetzt: Ordner 0710 root:wgops (die API durchquert ihn, listen
+# kann sie ihn nicht), jede *.env 0600 root:root (systemd liest sie als root für die
+# Units, kein Dienst-Nutzer liest sie selbst, auch nicht instance-role.env), die
+# öffentliche CA forgejo-ca.crt 0640 root:wgops (die API liest sie selbst über
+# COCKPIT_FORGEJO_CA). Andere Dateien dort bleiben, wie sie sind. Vor jeder Änderung hält
+# eine stat-Kopie den Ist-Stand fest; sie ist der Rückweg (env_dir_rights_restore).
+# Der markierte Block wird vom Test (deploy-env-dir-rights.test.ts) 1:1 ausgeführt.
+# >>> env-dir-rechte
+env_dir_rights_record() { # <datei>: Modus, uid, gid, Pfad des Ordners und seiner Einträge
+  local out="$1"
+  if [ ! -d "$ENV_DIR" ]; then : > "$out"; return 0; fi
+  (umask 077; find "$ENV_DIR" -maxdepth 1 ! -type l -printf '%m %U %G %p\n' > "$out")
+}
+env_dir_rights_apply() {
+  local f
+  chown root:wgops "$ENV_DIR"
+  chmod 0710 "$ENV_DIR"
+  for f in "$ENV_DIR"/*.env; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then chown root:root "$f"; chmod 0600 "$f"; fi
+  done
+  if [ -f "$ENV_DIR/forgejo-ca.crt" ] && [ ! -L "$ENV_DIR/forgejo-ca.crt" ]; then
+    chown root:wgops "$ENV_DIR/forgejo-ca.crt"
+    chmod 0640 "$ENV_DIR/forgejo-ca.crt"
+  fi
+}
+env_dir_rights_check() { # Vorprüfung vor dem API-Neustart; nennt jede Abweichung, rc 1
+  local f ca problems=()
+  runuser -u wgops -- test -x "$ENV_DIR" || problems+=("wgops kann $ENV_DIR nicht durchqueren")
+  # Die CA, die die API wirklich liest (Pfad samt Durchquerung, als wgops geprüft).
+  ca="$(sed -n 's/^COCKPIT_FORGEJO_CA=//p' "$ENV_DIR/forgejo.env" 2>/dev/null | tail -n 1)"
+  ca="${ca%\"}"; ca="${ca#\"}"
+  if [ -n "$ca" ] && ! runuser -u wgops -- test -r "$ca"; then
+    problems+=("wgops kann die CA $ca (COCKPIT_FORGEJO_CA) nicht lesen")
+  fi
+  for f in "$ENV_DIR"/*.env; do
+    if [ -e "$f" ] && runuser -u wgops -- test -r "$f"; then problems+=("wgops kann $f lesen"); fi
+  done
+  [ "${#problems[@]}" -eq 0 ] && return 0
+  printf '%s\n' "${problems[@]}"
+  return 1
+}
+env_dir_rights_restore() { # <datei>: Ist-Stand aus der stat-Kopie zurück (nur Eigentümer und Modus)
+  local mode uid gid path rc=0
+  while read -r mode uid gid path; do
+    if [ -e "$path" ] && [ ! -L "$path" ]; then
+      chown "$uid:$gid" "$path" && chmod "$mode" "$path" || rc=1
+    fi
+  done < "$1"
+  return "$rc"
+}
+api_health_wait() { # <sekunden>: /api/health meldet "ok":true binnen dieser Zeit
+  local end=$((SECONDS + $1))
+  while :; do
+    if curl -fsS --max-time 5 http://127.0.0.1:3001/api/health 2>/dev/null | grep -q '"ok":true'; then return 0; fi
+    if [ "$SECONDS" -ge "$end" ]; then return 1; fi
+    sleep 2
+  done
+}
+# <<< env-dir-rechte
 
 # ---------------------------------------------------------------------------
 # 0) Preflight
@@ -581,7 +648,11 @@ install -d -m 0700 -o cockpit-agent -g cockpit-agent-client "$AGENT_DIR/sessions
 install -d -m 0750 -o cockpit-runner -g cockpit-runner-client "$RUNNER_DIR"
 install -d -m 0700 -o cockpit-runner -g cockpit-runner-client "$RUNNER_DIR/sessions"
 install -d -m 0750 -o cockpit-executor -g cockpit-executor-client "$EXEC_DIR"
-install -d -m 0700 -o root -g root "$ENV_DIR"
+# Rechte von $ENV_DIR (Block env-dir-rechte): erst die stat-Kopie des Ist-Stands als Rückweg,
+# dann das Soll für den Ordner; die Dateien folgen in Abschnitt 6, die Vorprüfung vor dem Neustart.
+ENV_RIGHTS_BEFORE="$SECRETS_DIR/env-dir-rechte.vorher"
+env_dir_rights_record "$ENV_RIGHTS_BEFORE"
+install -d -m 0710 -o root -g wgops "$ENV_DIR"
 install -d -m 0755 /usr/local/lib/wireguard-ops-cockpit
 chmod 0750 "$STATE_DIR" "$AGENT_DIR" "$RUNNER_DIR" "$EXEC_DIR"
 chmod 0700 "$AGENT_DIR/sessions" "$RUNNER_DIR/sessions"
@@ -689,8 +760,7 @@ COCKPIT_ADMIN_USERNAME=admin
 COCKPIT_ADMIN_PASSWORD=$ADMIN_PW
 EOF
 
-chmod 600 "$ENV_DIR"/*.env
-chown root:root "$ENV_DIR"/*.env
+env_dir_rights_apply   # *.env 0600 root:root, forgejo-ca.crt 0640 root:wgops, Ordner 0710 root:wgops
 umask 022   # ab hier wieder normale Rechte für Build-/Web-Dateien
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1024,14 @@ systemctl enable --quiet wireguard-ops-cockpit-host-run-resume.service
 # Daher hier der explizite Zyklus der fünf Cockpit-Dienste; im Selbst-Update
 # (COCKPIT_RESTART_MODE=defer) wird er übersprungen — den Neustart übernimmt dort
 # die geplante Aktivierung des Selbst-Update-Runners.
+# Vorprüfung vor jedem Neustart (auch vor dem späteren des Runners): wgops durchquert
+# $ENV_DIR und liest die CA, aber keine *.env. Sonst Rechte aus der stat-Kopie zurück,
+# nichts neu gestartet (im Selbst-Update rollt der Runner den Stand zurück).
+if ! env_rights_problems="$(env_dir_rights_check)"; then
+  env_dir_rights_restore "$ENV_RIGHTS_BEFORE" || echo "WARNUNG: stat-Kopie $ENV_RIGHTS_BEFORE nicht vollständig zurückgesetzt." >&2
+  die "Vorprüfung der Rechte von $ENV_DIR gescheitert: ${env_rights_problems//$'\n'/; } — Rechte aus $ENV_RIGHTS_BEFORE zurückgesetzt, kein Dienst neu gestartet."
+fi
+echo "Vorprüfung $ENV_DIR: wgops durchquert den Ordner und liest die CA, keine *.env."
 # >>> dienste-zyklus
 case "${COCKPIT_RESTART_MODE:-}" in
   defer)
@@ -973,6 +1051,22 @@ esac
 # ---------------------------------------------------------------------------
 log "12) Verifikation"
 sleep 3
+# Nachprüfung nach dem Neustart: /api/health binnen COCKPIT_DEPLOY_HEALTH_WAIT Sekunden
+# (Vorgabe 60). Ohne Antwort und mit eigenem Neustart: Rechte von $ENV_DIR aus der
+# stat-Kopie zurück, API neu starten, noch einmal prüfen, dann laut abbrechen. Im
+# Selbst-Update (defer) läuft hier noch die alte API; die Nachprüfung macht dort die
+# Aktivierung des Runners, deren Rückfall die Rechte aus dem Snapshot zurücksetzt.
+if ! api_health_wait "${COCKPIT_DEPLOY_HEALTH_WAIT:-60}"; then
+  if [ "${COCKPIT_RESTART_MODE:-}" != "defer" ]; then
+    echo "API antwortet nicht — Rückweg: Rechte von $ENV_DIR aus $ENV_RIGHTS_BEFORE, API neu starten." >&2
+    if env_dir_rights_restore "$ENV_RIGHTS_BEFORE" && systemctl restart wireguard-ops-cockpit-api \
+        && api_health_wait "${COCKPIT_DEPLOY_HEALTH_WAIT:-60}"; then
+      die "API-Health erst mit den alten Rechten von $ENV_DIR wieder ok (stat-Kopie $ENV_RIGHTS_BEFORE) — das Soll passt nicht zu diesem Stand; journalctl -u wireguard-ops-cockpit-api, nicht erneut deployen."
+    fi
+    die "API-Health nicht ok, auch nicht mit den alten Rechten von $ENV_DIR — journalctl -u wireguard-ops-cockpit-api."
+  fi
+  die "API-Health nicht ok."
+fi
 for svc in api ttyd agent runner executor; do
   systemctl is-active --quiet "wireguard-ops-cockpit-$svc" \
     || die "wireguard-ops-cockpit-$svc nicht aktiv — journalctl -u wireguard-ops-cockpit-$svc"
@@ -1076,6 +1170,8 @@ Ergebnis:
     übernommen; ersetzt wird nur mit Backup (…bak-<zeitstempel>).
   - Admin-Zugangsdaten: /etc/wireguard-ops-cockpit/admin-recovery.env (root, 0600) — NICHT ausgeben, sicher übergeben
   - Secrets: /etc/wireguard-ops-cockpit/*.env + /opt/wireguard-ops-cockpit/.env (root, 0600)
+  - /etc/wireguard-ops-cockpit selbst 0710 root:wgops, forgejo-ca.crt 0640 root:wgops (setzt jeder Lauf;
+    Ist-Stand davor als stat-Kopie in $SECRETS_DIR/env-dir-rechte.vorher)
   - Disk-Helfer: /usr/local/sbin/cockpit-disk-action (status|remove|add für /dev/md127);
     Nutzung über Cockpit-Runbook mit allowedCapabilities ["disk.manage"].
     Smoke-Test (root): /usr/local/sbin/cockpit-disk-action status

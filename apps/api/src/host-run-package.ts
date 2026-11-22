@@ -131,11 +131,21 @@ function oneLine(value: string): string {
 }
 
 // The default reader: Forgejo's API over HTTPS with the operator's CA, a
-// read-only token, bounded answers, no redirects.
+// read-only token, bounded answers, no redirects. The CA is read per request,
+// never at start-up: an unreadable CA file (wrong rights on
+// /etc/wireguard-ops-cockpit, Lab0 outages 19.11. and 19.–22.11.2026, card
+// t_6f07b80b) stops only the plan with a package as incomplete material
+// ("Forgejo not readable: …"); the API itself keeps running.
 export function forgejoApiFetch(baseUrl: string, token: string, caFile: string | null, timeoutMs = 15_000): ForgejoFetch {
-  const ca = caFile ? readFileSync(caFile) : undefined;
   const base = new URL(baseUrl.replace(/\/+$/, "") + "/api/v1");
   return (apiPath) => new Promise((resolve, reject) => {
+    let ca: Buffer | undefined;
+    try {
+      ca = caFile ? readFileSync(caFile) : undefined;
+    } catch (error) {
+      reject(new Error(`CA file ${caFile} unreadable: ${(error as NodeJS.ErrnoException).code ?? "error"}`));
+      return;
+    }
     const url = new URL(base.pathname + apiPath, base);
     const request = https.get(url, { ca, headers: { authorization: `token ${token}`, accept: "application/json", "user-agent": "wireguard-ops-cockpit-host-run-package" }, timeout: timeoutMs }, (response) => {
       const chunks: Buffer[] = [];

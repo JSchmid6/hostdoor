@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,7 +13,7 @@ import {
   verifyHostRunFindings,
   type HostRunManifest,
 } from "../src/host-run.js";
-import { loadHostRunPackage, type PackageSource } from "../src/host-run-package.js";
+import { forgejoApiFetch, loadHostRunPackage, type PackageSource } from "../src/host-run-package.js";
 import { fakeForgejo, PACKAGE_BRANCH_COMMIT, PACKAGE_COMMIT, PACKAGE_FILES, PACKAGE_HEAD, sha256 } from "./fixtures/forgejo-package.js";
 
 // The package of a host run (card t_d7d34cf5, doc/setup/host-run.md 2c): the
@@ -87,6 +91,14 @@ describe("host-run package: loading from Forgejo", () => {
     expect((await loadHostRunPackage({ ...spec, files: [{ path: "dienstwart/install.sh", sha256: sha256(escape) }] }, source({ content: { "dienstwart/install.sh": escape } }))).problem).toContain("U+001B");
     const failing: PackageSource = { fetch: async () => { throw new Error("connect ECONNREFUSED 10.0.0.1:3443"); }, owners: ["Jochen"], label: "Forgejo" };
     expect((await loadHostRunPackage(spec, failing)).problem).toBe("Forgejo not readable: connect ECONNREFUSED 10.0.0.1:3443");
+  });
+
+  it("reads the CA per request: an unreadable CA stops the package, never the API's start (card t_6f07b80b)", async () => {
+    // Lab0 19.11. and 19.–22.11.2026: the CA was read at start-up and EACCES kept the API in a restart loop.
+    const caFile = path.join(mkdtempSync(path.join(tmpdir(), "forgejo-ca-")), "missing-ca.crt");
+    const fetch = forgejoApiFetch("https://127.0.0.1:9", "token", caFile);
+    const unreadable: PackageSource = { fetch, owners: ["Jochen"], label: "Forgejo" };
+    expect((await loadHostRunPackage(withPackage().package!, unreadable)).problem).toBe(`Forgejo not readable: CA file ${caFile} unreadable: ENOENT`);
   });
 
   it("reads every comment page by page and stops when there are more than it reads", async () => {

@@ -26,8 +26,15 @@
 #   files  sudoers file, nginx site, nginx drop-in, the agent's opencode
 #          config, the self-update state.json, the door's instance role
 # Secrets in /etc/wireguard-ops-cockpit are not copied: the deploy script only
-# creates missing ones and never rewrites them. The instance role there is no
-# secret and the deploy script rewrites it, so it is part of the footprint.
+# creates missing ones and never rewrites their content. The instance role there
+# is no secret and the deploy script rewrites it, so it is part of the footprint.
+#   rights the owner, group and mode of /etc/wireguard-ops-cockpit and of its
+#          direct entries (stat only, never content): the deploy script sets
+#          them on every run (0710 root:wgops, *.env 0600 root:root, the
+#          Forgejo CA 0640 root:wgops), and the API (wgops) must traverse the
+#          directory to read the CA. A rollback puts them back as they were
+#          (card t_6f07b80b: Lab0 outages 19.11. and 19.-22.11.2026); entries
+#          added since are left alone, nothing is created or removed there.
 #
 # The store (/var/lib/wireguard-ops-cockpit-self-update-snapshots, root 0700)
 # is deliberately not below /var/lib/wireguard-ops-cockpit (wgops writes there).
@@ -77,6 +84,9 @@ FILES = (
     "/var/lib/wireguard-ops-cockpit/self-update/state.json",
     "/etc/wireguard-ops-cockpit/instance-role.env",
 )
+RIGHTS_DIRS = (
+    "/etc/wireguard-ops-cockpit",
+)
 
 
 class Failure(Exception):
@@ -117,6 +127,41 @@ def entries():
         found += [(match[len(ROOT):], "glob:" + pattern) for match in sorted(glob.glob(host(pattern)))]
     found += [(path, "file") for path in FILES]
     return found
+
+
+def rights_of():
+    """Owner, group and mode of every RIGHTS_DIRS directory and its direct entries (lstat, no content)."""
+    found = []
+    for path in RIGHTS_DIRS:
+        if not os.path.isdir(host(path)) or os.path.islink(host(path)):
+            continue
+        for item in [path] + sorted(os.path.join(path, name) for name in os.listdir(host(path))):
+            info = os.lstat(host(item))
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            found.append({"path": item, "dir": stat.S_ISDIR(info.st_mode), "uid": info.st_uid, "gid": info.st_gid,
+                          "mode": "%04o" % stat.S_IMODE(info.st_mode)})
+    return found
+
+
+def put_back_rights(recorded):
+    """Owner, group and mode back as recorded; a path that is gone or changed its kind is skipped."""
+    restored, errors = [], []
+    for entry in recorded:
+        live = host(entry["path"])
+        try:
+            info = os.lstat(live)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or stat.S_ISDIR(info.st_mode) != entry["dir"]:
+            continue
+        try:
+            os.chown(live, entry["uid"], entry["gid"], follow_symlinks=False)
+            os.chmod(live, int(entry["mode"], 8))
+            restored.append(entry["path"])
+        except OSError as exc:
+            errors.append("%s (rights): %s" % (entry["path"], exc))
+    return restored, errors
 
 
 def size_of(path):
@@ -192,7 +237,7 @@ def cmd_create(name):
         head = subprocess.run(["git", "-C", host(TREES[0]), "rev-parse", "HEAD"], capture_output=True, text=True)
         manifest = {"version": 1, "name": name, "created_at": utcnow(), "complete": True, "bytes": need,
                     "checkout_head": head.stdout.strip() if head.returncode == 0 else None,
-                    "globs": list(GLOBS), "entries": recorded}
+                    "globs": list(GLOBS), "entries": recorded, "rights": rights_of()}
         with open(os.path.join(partial, "manifest.json"), "w", encoding="utf-8") as handle:
             json.dump(manifest, handle, sort_keys=True)
             handle.flush()
@@ -259,8 +304,12 @@ def cmd_restore(name):
                 removed.append(path)
         except (OSError, Failure) as exc:
             errors.append("%s: %s" % (path, getattr(exc, "message", exc)))
+    # After the files (the instance role is both a file and a rights entry); a snapshot of an
+    # older helper has no rights and leaves them as they are.
+    rights, rights_errors = put_back_rights(manifest.get("rights", []))
+    errors += rights_errors
     result = {"ok": not errors, "action": "restore", "name": name, "checkout_head": manifest.get("checkout_head"),
-              "restored": restored, "removed": removed, "errors": errors}
+              "restored": restored, "removed": removed, "rights": rights, "errors": errors}
     if errors:
         raise Failure(67, json.dumps(result, sort_keys=True))
     return result
