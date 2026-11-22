@@ -181,10 +181,18 @@ checkout `/opt/wireguard-ops-cockpit` with build output and `node_modules`,
 itself), the web root, the API drop-in directory, `/usr/local/sbin/cockpit-*`,
 `/etc/systemd/system/wireguard-ops-cockpit-*.service`, the retention
 service/timer, `/etc/sudoers.d/cockpit-executor`, the nginx site and its wg0
-drop-in, the agent's opencode config and `self-update/state.json`. Not copied:
-`/etc/wireguard-ops-cockpit` (the deploy script only creates missing secrets,
-never rewrites them), packages, Node/opencode under `/opt/node-*`, the borg
-repository, borgmatic and everything else on the box.
+drop-in, the agent's opencode config and `self-update/state.json`, plus the
+owner, group and mode of `/etc/wireguard-ops-cockpit` and of its direct entries
+(stat only, never content). Not copied: the content of
+`/etc/wireguard-ops-cockpit` (the deploy script only creates missing secrets
+and never rewrites their content — but it does set their rights on every run:
+directory 0710 root:wgops, every `*.env` 0600 root:root, `forgejo-ca.crt` 0640
+root:wgops, `doc/setup/host-run.md` 2c; until 22.11.2026 it set the directory to
+0700 root:root, which twice left the API unable to read the CA and restarting in
+a loop, card t_6f07b80b), packages, Node/opencode under `/opt/node-*`, the borg
+repository, borgmatic and everything else on the box. A rollback puts those
+rights back as recorded; entries added since are left alone, nothing is created
+or removed in that directory.
 
 **Flow** (runner, only where the helper is installed; the VPS has none and is
 unchanged):
@@ -237,6 +245,20 @@ operator clears it with
 From the next update on, both phases use this rule. In either case the
 `multi-user.target.wants` link of a removed unit stays behind dangling (the
 snapshot footprint does not cover `*.wants`); systemd ignores it.
+
+**Honest limit, the rollout that brings the rights of the env directory**
+(card t_6f07b80b). The deploy phase runs the deploy script installed *before*
+the update, so the update to the first stand with the `env-dir-rechte` block
+still sets `/etc/wireguard-ops-cockpit` to 0700 root:root, and its snapshot is
+taken by the old helper without rights. The new API reads the Forgejo CA only
+when it fetches a package, so its activation does not fail on it; until the
+rights are set again (any later deploy run, or one host run with the target of
+`doc/setup/host-run.md` 2c) a plan with a package stops as incomplete material.
+Should that first activation fail for another reason, the rollback restarts the
+*old* API, which reads the CA at start-up and would loop again — hence the
+staged rollout (box, then Lab0, then VPS) and, on Lab0, the host run that sets
+the rights right after the activation. From the next update on both phases use
+the new script and helper.
 
 `restore` puts back bytes, modes, owners and symlinks (`cp -a`), removes what
 the update added below the globs, and swaps directories in by rename after the
@@ -633,8 +655,14 @@ under the state directory — never a bare exit code.
 - `sudo bash test/cockpit-self-update-snapshot.test.sh` — the snapshot helper
   against a fixture root: byte-, mode- and owner-exact restore of a changed
   footprint (changed, added, removed files, new helper and unit), secrets and
-  foreign files untouched, refusals (name, existing, incomplete, space),
-  rotation.
+  foreign files untouched, the rights of `/etc/wireguard-ops-cockpit` and its
+  entries back (an env file added since stays), refusals (name, existing,
+  incomplete, space), rotation.
+- `apps/api/test/deploy-env-dir-rights.test.ts` — the deploy script's block
+  `env-dir-rechte` run 1:1: the target rights, the pre-check as wgops (CA read,
+  no `.env` read), the stat copy and its restore, and where the script calls
+  them (stat copy before the directory target, pre-check before every restart,
+  health wait after).
 - `apps/api/test/update-review.test.ts` — prompt assembly, answer parser,
   coverage/truncation stop, policy, envelope binding, prompt cases, second
   review (every step of the GitHub proof refused on its own, report only with
