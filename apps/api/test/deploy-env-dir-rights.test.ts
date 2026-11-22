@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,12 +46,17 @@ const chowns = () => readFileSync(path.join(dir, "chown.log"), "utf8").trim().sp
 beforeEach(() => {
   dir = mkdtempSync(path.join(tmpdir(), "deploy-env-dir-"));
   envDir = path.join(dir, "etc-wireguard-ops-cockpit");
-  mkdirSync(envDir, { mode: 0o770 });
+  // Modes set explicitly: the creating mode is cut by the umask (022 on the CI runner).
+  mkdirSync(envDir);
+  chmodSync(envDir, 0o770);
   for (const name of ["api.env", "agent.env", "forgejo.env", "instance-role.env", "forgejo-ca.crt"]) {
-    writeFileSync(path.join(envDir, name), name === "forgejo.env" ? `COCKPIT_FORGEJO_URL=https://10.0.0.1:3443\nCOCKPIT_FORGEJO_CA="${envDir}/forgejo-ca.crt"\n` : "x\n", { mode: 0o660 });
+    writeFileSync(path.join(envDir, name), name === "forgejo.env" ? `COCKPIT_FORGEJO_URL=https://10.0.0.1:3443\nCOCKPIT_FORGEJO_CA="${envDir}/forgejo-ca.crt"\n` : "x\n");
+    chmodSync(path.join(envDir, name), 0o660);
   }
-  writeFileSync(path.join(envDir, "api.env.bak-t_b5310e6a"), "x\n", { mode: 0o644 });
-  writeFileSync(path.join(dir, "elsewhere.env"), "x\n", { mode: 0o644 });
+  writeFileSync(path.join(envDir, "api.env.bak-t_b5310e6a"), "x\n");
+  chmodSync(path.join(envDir, "api.env.bak-t_b5310e6a"), 0o644);
+  writeFileSync(path.join(dir, "elsewhere.env"), "x\n");
+  chmodSync(path.join(dir, "elsewhere.env"), 0o644);
   symlinkSync(path.join(dir, "elsewhere.env"), path.join(envDir, "link.env"));
   writeFileSync(path.join(dir, "chown.log"), "");
 });
