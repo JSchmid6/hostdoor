@@ -50,6 +50,7 @@ beforeEach(() => {
   for (const name of ["api.env", "agent.env", "forgejo.env", "instance-role.env", "forgejo-ca.crt"]) {
     writeFileSync(path.join(envDir, name), name === "forgejo.env" ? `COCKPIT_FORGEJO_URL=https://10.0.0.1:3443\nCOCKPIT_FORGEJO_CA="${envDir}/forgejo-ca.crt"\n` : "x\n", { mode: 0o660 });
   }
+  writeFileSync(path.join(envDir, "api.env.bak-t_b5310e6a"), "x\n", { mode: 0o644 });
   writeFileSync(path.join(dir, "elsewhere.env"), "x\n", { mode: 0o644 });
   symlinkSync(path.join(dir, "elsewhere.env"), path.join(envDir, "link.env"));
   writeFileSync(path.join(dir, "chown.log"), "");
@@ -60,20 +61,22 @@ afterEach(() => {
 });
 
 describe("deploy: rights of /etc/wireguard-ops-cockpit", () => {
-  it("sets the target: directory 0710 root:wgops, every .env 0600 root:root, the CA 0640 root:wgops, symlinks untouched", () => {
+  it("sets the target: every file 0600 root:root, only the CA 0640 root:wgops, then the directory 0710 root:wgops; symlinks untouched", () => {
     const out = run("env_dir_rights_apply");
     expect(out.status, out.stderr).toBe(0);
     expect(mode(envDir)).toBe("710");
-    for (const name of ["api.env", "agent.env", "forgejo.env", "instance-role.env"]) expect(mode(path.join(envDir, name))).toBe("600");
+    for (const name of ["api.env", "agent.env", "forgejo.env", "instance-role.env", "api.env.bak-t_b5310e6a"]) expect(mode(path.join(envDir, name))).toBe("600");
     expect(mode(path.join(envDir, "forgejo-ca.crt"))).toBe("640");
     expect(mode(path.join(dir, "elsewhere.env"))).toBe("644");
+    // Files first, the directory last: never an open directory in front of an open file (second review R1).
     expect(chowns()).toEqual([
-      `chown root:wgops ${envDir}`,
       `chown root:root ${envDir}/agent.env`,
       `chown root:root ${envDir}/api.env`,
+      `chown root:root ${envDir}/api.env.bak-t_b5310e6a`,
+      `chown root:wgops ${envDir}/forgejo-ca.crt`,
       `chown root:root ${envDir}/forgejo.env`,
       `chown root:root ${envDir}/instance-role.env`,
-      `chown root:wgops ${envDir}/forgejo-ca.crt`,
+      `chown root:wgops ${envDir}`,
     ]);
   });
 
@@ -91,8 +94,21 @@ describe("deploy: rights of /etc/wireguard-ops-cockpit", () => {
     const open = run("env_dir_rights_check || echo \"rc=$?\"", [envDir, `${envDir}/forgejo-ca.crt`, `${envDir}/api.env`, `${envDir}/forgejo.env`]);
     expect(open.stdout).toContain(`wgops kann ${envDir}/api.env lesen`);
     expect(open.stdout).toContain(`wgops kann ${envDir}/forgejo.env lesen`);
+    expect(open.stdout).not.toContain("forgejo-ca.crt lesen");
     expect(open.stdout).not.toContain("nicht durchqueren");
     expect(open.stdout).toContain("rc=1");
+  });
+
+  it("pre-check: wgops reads nothing in the directory besides the CA, a backup of an .env included", () => {
+    const out = run("env_dir_rights_check || echo \"rc=$?\"", [envDir, `${envDir}/forgejo-ca.crt`, `${envDir}/api.env.bak-t_b5310e6a`]);
+    expect(out.stdout).toContain(`wgops kann ${envDir}/api.env.bak-t_b5310e6a lesen`);
+    expect(out.stdout).toContain("rc=1");
+  });
+
+  it("pre-check reads the CA path in single or double quotes, as systemd does", () => {
+    writeFileSync(path.join(envDir, "forgejo.env"), `COCKPIT_FORGEJO_CA='${envDir}/forgejo-ca.crt'\n`);
+    const out = run("env_dir_rights_check && echo GUT", [envDir, `${envDir}/forgejo-ca.crt`]);
+    expect(out.stdout.trim()).toBe("GUT");
   });
 
   it("pre-check without a configured CA asks only for traversal and closed .env files", () => {
@@ -117,25 +133,28 @@ describe("deploy: rights of /etc/wireguard-ops-cockpit", () => {
   it("first install: no directory yet, an empty stat copy", () => {
     rmSync(envDir, { recursive: true, force: true });
     const record = path.join(dir, "env-dir-rechte.vorher");
-    const out = run(`env_dir_rights_record "${record}"; wc -c < "${record}"`);
+    const out = run(`umask 022; env_dir_rights_record "${record}"; wc -c < "${record}"`);
     expect(out.status, out.stderr).toBe(0);
     expect(out.stdout.trim()).toBe("0");
+    expect(mode(record)).toBe("600");
   });
 
-  it("the script uses the block: stat copy before the directory target, no 0700 root:root, pre-check before every restart, health wait after", () => {
+  it("the script uses the block: stat copy before the target, no 0700 root:root, pre-check before every start or restart, health wait after", () => {
     const script = readFileSync(SCRIPT, "utf8");
     expect(script).not.toContain('install -d -m 0700 -o root -g root "$ENV_DIR"');
     const record = script.indexOf('env_dir_rights_record "$ENV_RIGHTS_BEFORE"');
-    const target = script.indexOf('install -d -m 0710 -o root -g wgops "$ENV_DIR"');
+    const target = script.indexOf("env_dir_rights_apply   # Dateien");
     expect(record).toBeGreaterThan(script.indexOf("# <<< env-dir-rechte"));
     expect(target).toBeGreaterThan(record);
-    const apply = script.indexOf("env_dir_rights_apply   #");
+    const again = script.indexOf("env_dir_rights_apply   # auch für die eben angelegten .env");
     const instanceRole = script.indexOf('install -m 600 -o root -g root "$COCKPIT_DIR/deploy/$COCKPIT_ROLE/instance-role.env" "$ENV_DIR/instance-role.env"');
     const check = script.indexOf('env_rights_problems="$(env_dir_rights_check)"');
+    const start = script.indexOf("systemctl enable --now wireguard-ops-cockpit-api");
     const restart = script.indexOf("# >>> dienste-zyklus");
-    expect(apply).toBeGreaterThan(target);
-    expect(check).toBeGreaterThan(Math.max(apply, instanceRole));
-    expect(restart).toBeGreaterThan(check);
+    expect(again).toBeGreaterThan(target);
+    expect(check).toBeGreaterThan(Math.max(again, instanceRole));
+    expect(start).toBeGreaterThan(check);
+    expect(restart).toBeGreaterThan(start);
     expect(script.indexOf('api_health_wait "${COCKPIT_DEPLOY_HEALTH_WAIT:-60}"')).toBeGreaterThan(restart);
   });
 });

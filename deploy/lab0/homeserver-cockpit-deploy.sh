@@ -118,9 +118,9 @@
 #   - Alle Secrets entstehen auf der Kiste (root, Modus 0600) — dieses Skript
 #     enthält keine Secrets. Das Admin-Passwort wird NICHT auf stdout gedruckt.
 #   - Rechte von /etc/wireguard-ops-cockpit setzt jeder Lauf (22.11.2026, Karte
-#     t_6f07b80b, Block env-dir-rechte): Ordner 0710 root:wgops, *.env 0600 root:root,
-#     forgejo-ca.crt 0640 root:wgops; vorher eine stat-Kopie als Rückweg, vor dem
-#     Neustart die Vorprüfung als wgops, danach /api/health binnen 60 s.
+#     t_6f07b80b, Block env-dir-rechte): Ordner 0710 root:wgops, jede Datei 0600
+#     root:root, nur forgejo-ca.crt 0640 root:wgops; vorher eine stat-Kopie als Rückweg,
+#     vor dem Start der Dienste die Vorprüfung als wgops, danach /api/health binnen 60 s.
 #   - Idempotent genug für Wiederholung: vorhandene .env-Dateien bleiben erhalten,
 #     Code wird per git auf den Pin-Stand gebracht und neu gebaut; nginx wird am
 #     Ende neu geladen, die vier Cockpit-Dienste werden neu gestartet (außer
@@ -162,41 +162,44 @@ die()  { printf '\nFEHLER: %s\n' "$*" >&2; exit 1; }
 # 19.–22.11.2026: dieses Skript setzte den Ordner bei jedem Lauf auf 0700 root:root, die
 # API (wgops) konnte die Forgejo-CA nicht mehr lesen und startete im Kreis neu, 502).
 # Soll, bei jedem Lauf gesetzt: Ordner 0710 root:wgops (die API durchquert ihn, listen
-# kann sie ihn nicht), jede *.env 0600 root:root (systemd liest sie als root für die
-# Units, kein Dienst-Nutzer liest sie selbst, auch nicht instance-role.env), die
-# öffentliche CA forgejo-ca.crt 0640 root:wgops (die API liest sie selbst über
-# COCKPIT_FORGEJO_CA). Andere Dateien dort bleiben, wie sie sind. Vor jeder Änderung hält
-# eine stat-Kopie den Ist-Stand fest; sie ist der Rückweg (env_dir_rights_restore).
+# kann sie ihn nicht), jede Datei darin 0600 root:root (die *.env liest systemd als root
+# für die Units, kein Dienst-Nutzer liest sie selbst, auch nicht instance-role.env), nur
+# die öffentliche CA forgejo-ca.crt 0640 root:wgops (die API liest sie selbst über
+# COCKPIT_FORGEJO_CA; sie muss so heißen). Vor jeder Änderung hält eine stat-Kopie den
+# Ist-Stand fest; sie ist der Rückweg (env_dir_rights_restore).
 # Der markierte Block wird vom Test (deploy-env-dir-rights.test.ts) 1:1 ausgeführt.
 # >>> env-dir-rechte
-env_dir_rights_record() { # <datei>: Modus, uid, gid, Pfad des Ordners und seiner Einträge
+env_dir_rights_record() { # <datei>: Modus, uid, gid, Pfad des Ordners und seiner Einträge (0600)
   local out="$1"
-  if [ ! -d "$ENV_DIR" ]; then : > "$out"; return 0; fi
-  (umask 077; find "$ENV_DIR" -maxdepth 1 ! -type l -printf '%m %U %G %p\n' > "$out")
+  (umask 077; if [ -d "$ENV_DIR" ]; then find "$ENV_DIR" -maxdepth 1 ! -type l -printf '%m %U %G %p\n' > "$out"; else : > "$out"; fi)
+  chmod 0600 "$out"
 }
-env_dir_rights_apply() {
+env_dir_rights_apply() { # erst jede Datei, dann der Ordner: nie ein offener Ordner vor einer offenen Datei
   local f
+  for f in "$ENV_DIR"/* "$ENV_DIR"/.[!.]*; do
+    if [ ! -f "$f" ] || [ -L "$f" ]; then continue; fi
+    if [ "$f" = "$ENV_DIR/forgejo-ca.crt" ]; then
+      chown root:wgops "$f"; chmod 0640 "$f"
+    else
+      chown root:root "$f"; chmod 0600 "$f"
+    fi
+  done
   chown root:wgops "$ENV_DIR"
   chmod 0710 "$ENV_DIR"
-  for f in "$ENV_DIR"/*.env; do
-    if [ -f "$f" ] && [ ! -L "$f" ]; then chown root:root "$f"; chmod 0600 "$f"; fi
-  done
-  if [ -f "$ENV_DIR/forgejo-ca.crt" ] && [ ! -L "$ENV_DIR/forgejo-ca.crt" ]; then
-    chown root:wgops "$ENV_DIR/forgejo-ca.crt"
-    chmod 0640 "$ENV_DIR/forgejo-ca.crt"
-  fi
 }
-env_dir_rights_check() { # Vorprüfung vor dem API-Neustart; nennt jede Abweichung, rc 1
+env_dir_rights_check() { # Vorprüfung vor dem Start der Dienste; nennt jede Abweichung, rc 1
   local f ca problems=()
   runuser -u wgops -- test -x "$ENV_DIR" || problems+=("wgops kann $ENV_DIR nicht durchqueren")
   # Die CA, die die API wirklich liest (Pfad samt Durchquerung, als wgops geprüft).
   ca="$(sed -n 's/^COCKPIT_FORGEJO_CA=//p' "$ENV_DIR/forgejo.env" 2>/dev/null | tail -n 1)"
-  ca="${ca%\"}"; ca="${ca#\"}"
+  ca="$(printf '%s' "$ca" | tr -d "\"'")"   # systemd erlaubt "…" und '…'
   if [ -n "$ca" ] && ! runuser -u wgops -- test -r "$ca"; then
     problems+=("wgops kann die CA $ca (COCKPIT_FORGEJO_CA) nicht lesen")
   fi
-  for f in "$ENV_DIR"/*.env; do
-    if [ -e "$f" ] && runuser -u wgops -- test -r "$f"; then problems+=("wgops kann $f lesen"); fi
+  # Außer der CA liest wgops nichts im Ordner (auch keine Sicherungskopie einer .env).
+  for f in "$ENV_DIR"/* "$ENV_DIR"/.[!.]*; do
+    if [ ! -e "$f" ] || [ "$f" = "$ENV_DIR/forgejo-ca.crt" ]; then continue; fi
+    if runuser -u wgops -- test -r "$f"; then problems+=("wgops kann $f lesen"); fi
   done
   [ "${#problems[@]}" -eq 0 ] && return 0
   printf '%s\n' "${problems[@]}"
@@ -649,10 +652,12 @@ install -d -m 0750 -o cockpit-runner -g cockpit-runner-client "$RUNNER_DIR"
 install -d -m 0700 -o cockpit-runner -g cockpit-runner-client "$RUNNER_DIR/sessions"
 install -d -m 0750 -o cockpit-executor -g cockpit-executor-client "$EXEC_DIR"
 # Rechte von $ENV_DIR (Block env-dir-rechte): erst die stat-Kopie des Ist-Stands als Rückweg,
-# dann das Soll für den Ordner; die Dateien folgen in Abschnitt 6, die Vorprüfung vor dem Neustart.
+# dann das Soll; Abschnitt 6 setzt es nach dem Anlegen fehlender .env noch einmal, die
+# Vorprüfung läuft vor dem Start der Dienste (Abschnitt 11).
 ENV_RIGHTS_BEFORE="$SECRETS_DIR/env-dir-rechte.vorher"
 env_dir_rights_record "$ENV_RIGHTS_BEFORE"
-install -d -m 0710 -o root -g wgops "$ENV_DIR"
+[ -d "$ENV_DIR" ] || mkdir -m 0700 "$ENV_DIR"
+env_dir_rights_apply   # Dateien 0600 root:root (CA 0640 root:wgops), dann der Ordner 0710 root:wgops
 install -d -m 0755 /usr/local/lib/wireguard-ops-cockpit
 chmod 0750 "$STATE_DIR" "$AGENT_DIR" "$RUNNER_DIR" "$EXEC_DIR"
 chmod 0700 "$AGENT_DIR/sessions" "$RUNNER_DIR/sessions"
@@ -760,7 +765,7 @@ COCKPIT_ADMIN_USERNAME=admin
 COCKPIT_ADMIN_PASSWORD=$ADMIN_PW
 EOF
 
-env_dir_rights_apply   # *.env 0600 root:root, forgejo-ca.crt 0640 root:wgops, Ordner 0710 root:wgops
+env_dir_rights_apply   # auch für die eben angelegten .env
 umask 022   # ab hier wieder normale Rechte für Build-/Web-Dateien
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1017,14 @@ else
   systemctl start nginx
   echo "nginx: gestartet."
 fi
+# Vorprüfung vor jedem Start oder Neustart der Dienste (auch vor dem späteren des Runners):
+# wgops durchquert $ENV_DIR und liest die CA, aber sonst nichts darin. Sonst Rechte aus der
+# stat-Kopie zurück, nichts gestartet (im Selbst-Update rollt der Runner den Stand zurück).
+if ! env_rights_problems="$(env_dir_rights_check)"; then
+  env_dir_rights_restore "$ENV_RIGHTS_BEFORE" || echo "WARNUNG: stat-Kopie $ENV_RIGHTS_BEFORE nicht vollständig zurückgesetzt." >&2
+  die "Vorprüfung der Rechte von $ENV_DIR gescheitert: ${env_rights_problems//$'\n'/; } — Rechte aus $ENV_RIGHTS_BEFORE zurückgesetzt, kein Dienst gestartet."
+fi
+echo "Vorprüfung $ENV_DIR: wgops durchquert den Ordner und liest die CA, sonst nichts."
 systemctl enable --now wireguard-ops-cockpit-api wireguard-ops-cockpit-ttyd \
   wireguard-ops-cockpit-agent wireguard-ops-cockpit-runner wireguard-ops-cockpit-executor
 # Aufräum-Dienst (nur lab0): nur der Timer läuft dauerhaft; der Lauf selbst ist ein oneshot.
@@ -1024,14 +1037,6 @@ systemctl enable --quiet wireguard-ops-cockpit-host-run-resume.service
 # Daher hier der explizite Zyklus der fünf Cockpit-Dienste; im Selbst-Update
 # (COCKPIT_RESTART_MODE=defer) wird er übersprungen — den Neustart übernimmt dort
 # die geplante Aktivierung des Selbst-Update-Runners.
-# Vorprüfung vor jedem Neustart (auch vor dem späteren des Runners): wgops durchquert
-# $ENV_DIR und liest die CA, aber keine *.env. Sonst Rechte aus der stat-Kopie zurück,
-# nichts neu gestartet (im Selbst-Update rollt der Runner den Stand zurück).
-if ! env_rights_problems="$(env_dir_rights_check)"; then
-  env_dir_rights_restore "$ENV_RIGHTS_BEFORE" || echo "WARNUNG: stat-Kopie $ENV_RIGHTS_BEFORE nicht vollständig zurückgesetzt." >&2
-  die "Vorprüfung der Rechte von $ENV_DIR gescheitert: ${env_rights_problems//$'\n'/; } — Rechte aus $ENV_RIGHTS_BEFORE zurückgesetzt, kein Dienst neu gestartet."
-fi
-echo "Vorprüfung $ENV_DIR: wgops durchquert den Ordner und liest die CA, keine *.env."
 # >>> dienste-zyklus
 case "${COCKPIT_RESTART_MODE:-}" in
   defer)

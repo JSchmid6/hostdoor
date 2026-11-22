@@ -412,22 +412,26 @@ liest die API (Nutzer `wgops`) selbst über `COCKPIT_FORGEJO_CA`. Darum gilt:
 | Pfad | Eigentümer | Modus | warum |
 | --- | --- | --- | --- |
 | `/etc/wireguard-ops-cockpit/` | root:wgops | 0710 | die API durchquert den Ordner, auflisten kann sie ihn nicht |
-| `*.env` (auch `forgejo.env`, `instance-role.env`) | root:root | 0600 | Geheimnisse bzw. Rolle der Tür; nur systemd/root liest sie |
+| jede andere Datei darin (`*.env` samt `forgejo.env`, `instance-role.env`, Sicherungskopien) | root:root | 0600 | Geheimnisse bzw. Rolle der Tür; nur systemd/root liest sie |
 | `forgejo-ca.crt` | root:wgops | 0640 | öffentliches Zertifikat, die API liest es; schreiben darf sie es nicht |
 
 Das Lab0-/Box-Deploy (`deploy/lab0/homeserver-cockpit-deploy.sh`, Block `env-dir-rechte`) setzt genau
-dieses Soll bei jedem Lauf, auch im Selbst-Update; andere Dateien im Ordner lässt es, wie sie sind.
+dieses Soll bei jedem Lauf, auch im Selbst-Update: erst jede Datei, dann den Ordner (so steht nie ein
+offener Ordner vor einer offenen Datei). Die CA muss `forgejo-ca.crt` heißen; liegt `COCKPIT_FORGEJO_CA`
+auf einem anderen Namen im Ordner, macht das Soll sie 0600 und die Abnahme bricht ab (gewollt, statt
+eine zweite lesbare Datei zuzulassen).
 Bis zum 22.11.2026 setzte es den Ordner auf 0700 root:root: die API las die CA beim Start, scheiterte
 mit EACCES und lief auf Lab0 zweimal im Kreis (19.11. ab 16:37, 19.11. 20:27Z bis 22.11. 07:53, 502;
 Jochen musste beide Male an die Kiste). Seitdem liest die API die CA erst beim Abruf eines Pakets: eine
 unlesbare CA stoppt nur den Plan mit Paket („Forgejo not readable: CA file … unreadable: EACCES“), nie
 die API.
 
-Abnahme (im Deploy-Skript, vor jedem Neustart, auch vor dem späteren der Selbst-Update-Aktivierung):
-`runuser -u wgops -- test -x /etc/wireguard-ops-cockpit`, `runuser -u wgops -- test -r <COCKPIT_FORGEJO_CA>`
-(der Pfad samt Durchquerung, so wie die API ihn liest) und für jede `*.env` muss `test -r` als wgops
-scheitern. Scheitert eine Prüfung, setzt das Skript die Rechte aus der stat-Kopie zurück und bricht ab,
-bevor ein Dienst neu startet. Nach dem eigenen Neustart muss `/api/health` binnen
+Abnahme (im Deploy-Skript, vor jedem Start oder Neustart der Dienste, also auch vor der späteren
+Selbst-Update-Aktivierung): `runuser -u wgops -- test -x /etc/wireguard-ops-cockpit`,
+`runuser -u wgops -- test -r <COCKPIT_FORGEJO_CA>` (der Pfad samt Durchquerung, so wie die API ihn
+liest; einfache oder doppelte Anführungszeichen wie bei systemd) und für jeden anderen Eintrag des
+Ordners muss `test -r` als wgops scheitern. Scheitert eine Prüfung, setzt das Skript die Rechte aus der
+stat-Kopie zurück und bricht ab, bevor ein Dienst startet. Nach dem eigenen Neustart muss `/api/health` binnen
 `COCKPIT_DEPLOY_HEALTH_WAIT` Sekunden (Vorgabe 60) `"ok":true` melden.
 
 Rückweg: Vor jeder Änderung schreibt das Skript den Ist-Stand als stat-Kopie (`Modus uid gid Pfad` für

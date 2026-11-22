@@ -186,8 +186,8 @@ owner, group and mode of `/etc/wireguard-ops-cockpit` and of its direct entries
 (stat only, never content). Not copied: the content of
 `/etc/wireguard-ops-cockpit` (the deploy script only creates missing secrets
 and never rewrites their content — but it does set their rights on every run:
-directory 0710 root:wgops, every `*.env` 0600 root:root, `forgejo-ca.crt` 0640
-root:wgops, `doc/setup/host-run.md` 2c; until 22.11.2026 it set the directory to
+directory 0710 root:wgops, every other file there (the `*.env` included) 0600
+root:root, only `forgejo-ca.crt` 0640 root:wgops, `doc/setup/host-run.md` 2c; until 22.11.2026 it set the directory to
 0700 root:root, which twice left the API unable to read the CA and restarting in
 a loop, card t_6f07b80b), packages, Node/opencode under `/opt/node-*`, the borg
 repository, borgmatic and everything else on the box. A rollback puts those
@@ -255,9 +255,12 @@ when it fetches a package, so its activation does not fail on it; until the
 rights are set again (any later deploy run, or one host run with the target of
 `doc/setup/host-run.md` 2c) a plan with a package stops as incomplete material.
 Should that first activation fail for another reason, the rollback restarts the
-*old* API, which reads the CA at start-up and would loop again — hence the
-staged rollout (box, then Lab0, then VPS) and, on Lab0, the host run that sets
-the rights right after the activation. From the next update on both phases use
+*old* API, which reads the CA at start-up and would loop again; the same holds
+when the old API restarts on its own between the deploy and the activation
+(up to 600 s delay plus the wait for running jobs; `Restart=always`, e.g. after a
+crash) — hence the staged rollout (box, then Lab0, then VPS), a Lab0 update at a
+quiet time, and on Lab0 the host run that sets the rights right after the
+activation. From the next update on both phases use
 the new script and helper.
 
 `restore` puts back bytes, modes, owners and symlinks (`cp -a`), removes what
