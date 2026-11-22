@@ -405,6 +405,52 @@ Paket nicht abschreiben: James schreibt das Manifest in den Intent (Abschnitt 5)
 bleibt unverändert (er ist schon so knapp an der 30 000-Zeichen-Grenze, dass jede Zeile dort einen Plan
 verdrängt).
 
+**Rechte von `/etc/wireguard-ops-cockpit`** (22.11.2026, Karte t_6f07b80b). Die `.env`-Dateien liest
+systemd als root für die Units (`EnvironmentFile=`), kein Dienst-Nutzer liest sie selbst; die CA aber
+liest die API (Nutzer `wgops`) selbst über `COCKPIT_FORGEJO_CA`. Darum gilt:
+
+| Pfad | Eigentümer | Modus | warum |
+| --- | --- | --- | --- |
+| `/etc/wireguard-ops-cockpit/` | root:wgops | 0710 | die API durchquert den Ordner, auflisten kann sie ihn nicht |
+| jede andere Datei darin (`*.env` samt `forgejo.env`, `instance-role.env`, Sicherungskopien) | root:root | 0600 | Geheimnisse bzw. Rolle der Tür; nur systemd/root liest sie |
+| `forgejo-ca.crt` | root:wgops | 0640 | öffentliches Zertifikat, die API liest es; schreiben darf sie es nicht |
+
+Das Lab0-/Box-Deploy (`deploy/lab0/homeserver-cockpit-deploy.sh`, Block `env-dir-rechte`) setzt genau
+dieses Soll bei jedem Lauf, auch im Selbst-Update: erst jede Datei, dann den Ordner (so steht nie ein
+offener Ordner vor einer offenen Datei). Die CA muss `forgejo-ca.crt` heißen; liegt `COCKPIT_FORGEJO_CA`
+auf einem anderen Namen im Ordner, macht das Soll sie 0600 und die Abnahme bricht ab (gewollt, statt
+eine zweite lesbare Datei zuzulassen).
+Bis zum 22.11.2026 setzte es den Ordner auf 0700 root:root: die API las die CA beim Start, scheiterte
+mit EACCES und lief auf Lab0 zweimal im Kreis (19.11. ab 16:37, 19.11. 20:27Z bis 22.11. 07:53, 502;
+Jochen musste beide Male an die Kiste). Seitdem liest die API die CA erst beim Abruf eines Pakets: eine
+unlesbare CA stoppt nur den Plan mit Paket („Forgejo not readable: CA file … unreadable: EACCES“), nie
+die API.
+
+Abnahme (im Deploy-Skript, vor jedem Start oder Neustart der Dienste, also auch vor der späteren
+Selbst-Update-Aktivierung): `runuser -u wgops -- test -x /etc/wireguard-ops-cockpit`,
+`runuser -u wgops -- test -r <COCKPIT_FORGEJO_CA>` (der Pfad samt Durchquerung, so wie die API ihn
+liest; einfache oder doppelte Anführungszeichen wie bei systemd) und für jeden anderen Eintrag des
+Ordners muss `test -r` als wgops scheitern. Scheitert eine Prüfung, setzt das Skript die Rechte aus der
+stat-Kopie zurück und bricht ab, bevor ein Dienst startet. Nach dem eigenen Neustart muss `/api/health` binnen
+`COCKPIT_DEPLOY_HEALTH_WAIT` Sekunden (Vorgabe 60) `"ok":true` melden.
+
+Rückweg: Vor jeder Änderung schreibt das Skript den Ist-Stand als stat-Kopie (`Modus uid gid Pfad` für
+den Ordner und seine Einträge, nie Inhalt) nach `/root/cockpit-deploy/env-dir-rechte.vorher` (0600).
+Antwortet die API nach dem eigenen Neustart nicht, setzt das Skript daraus Eigentümer und Modus zurück,
+startet die API neu und sagt laut, ob sie mit den alten Rechten wieder antwortet. Im Selbst-Update
+macht das der Rückfall des Runners: der Snapshot (`cockpit-self-update-snapshot`) hält dieselben
+Angaben fest und setzt sie beim Zurückrollen wieder (`doc/setup/self-update.md`, „Lab0: snapshot and
+rollback“). Von Hand (root, nur wenn das Cockpit selbst nicht mehr antwortet):
+`while read -r m u g p; do chown "$u:$g" "$p"; chmod "$m" "$p"; done < /root/cockpit-deploy/env-dir-rechte.vorher`,
+dann `systemctl restart wireguard-ops-cockpit-api`.
+
+Das VPS-Deploy (`deploy/vps/vps-cockpit-deploy.sh`) fasst den Ordner nicht an. Gemessen 22.11.2026
+(Host-Run 7abe2db3): Ordner 0755 root:root, jede Geheimnis-`.env` 0600 root:root, `forgejo-ca.crt` und
+`self-update.env` (keine Geheimnisse) 0644, keine `forgejo.env`; die CA liest dort bisher nur der
+root-Deployer des Email Archive. Bekommt der VPS eine Paketquelle, gehört die Abnahme oben vorher von
+Hand dazu. Box (Host-Run 29a9a5d9): Ordner 0700 root:root, keine CA, keine `forgejo.env`; dort setzt
+das Lab0-/Box-Deploy beim nächsten Lauf das Soll.
+
 Ehrliche Grenzen: Der Freigabe-Kommentar im PR kann mit dem Token des Agenten geschrieben werden
 (wie der Marker der Zweitprüfung beim Selbstupdate); er ist ein öffentlicher Beleg zum Commit, kein
 zweiter Mensch. Die eigentliche Sicherung bleibt, dass der Türsteher jede Zeile liest. Ein Diff gegen

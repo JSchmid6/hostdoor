@@ -7,7 +7,9 @@
 # HEAD, helper library, web root, units, sudoers, nginx site, state.json),
 # takes a snapshot, changes the footprint like an update would (changed,
 # added and removed files, a new helper, a new unit, a changed mode) and
-# checks that restore puts back exactly the old bytes, modes and owners.
+# checks that restore puts back exactly the old bytes, modes and owners —
+# and the owners and modes of /etc/wireguard-ops-cockpit and its entries,
+# never their content (card t_6f07b80b).
 # Also: incomplete snapshots are refused, rotation keeps the newest two,
 # bad names and too little space stop `create`.
 #
@@ -73,6 +75,11 @@ echo '{"agent":1}' > "$R/var/lib/wireguard-ops-agent/.config/opencode/opencode.j
 chown 1234:1234 "$R/var/lib/wireguard-ops-agent/.config/opencode/opencode.jsonc"; chmod 600 "$R/var/lib/wireguard-ops-agent/.config/opencode/opencode.jsonc"
 echo '{"deployed_commit":"'"$OLD_HEAD"'"}' > "$R/var/lib/wireguard-ops-cockpit/self-update/state.json"
 echo "SECRET=1" > "$R/etc/wireguard-ops-cockpit/api.env"
+# Rights of the env directory (card t_6f07b80b): the deploy's target, stat only, never content.
+echo "CA" > "$R/etc/wireguard-ops-cockpit/forgejo-ca.crt"
+chown 0:4242 "$R/etc/wireguard-ops-cockpit" "$R/etc/wireguard-ops-cockpit/forgejo-ca.crt"
+chmod 0710 "$R/etc/wireguard-ops-cockpit"; chmod 0640 "$R/etc/wireguard-ops-cockpit/forgejo-ca.crt"
+chmod 0600 "$R/etc/wireguard-ops-cockpit/api.env"
 # nginx drop-in deliberately absent: restore must remove it when an update adds it
 BEFORE="$(fingerprint)"
 
@@ -105,6 +112,11 @@ echo '{"agent":2}' > "$R/var/lib/wireguard-ops-agent/.config/opencode/opencode.j
 echo '{"deployed_commit":"new"}' > "$R/var/lib/wireguard-ops-cockpit/self-update/state.json"
 echo "SECRET=2" > "$R/etc/wireguard-ops-cockpit/api.env"
 echo "other v2" > "$R/usr/local/sbin/other-tool"
+# like an old deploy script (0700 root:root on the directory) and a hand fix (group rw on the files)
+chown 0:0 "$R/etc/wireguard-ops-cockpit"; chmod 0700 "$R/etc/wireguard-ops-cockpit"
+chown 0:4242 "$R/etc/wireguard-ops-cockpit/api.env"; chmod 0660 "$R/etc/wireguard-ops-cockpit/api.env"
+chmod 0644 "$R/etc/wireguard-ops-cockpit/forgejo-ca.crt"
+echo "NEW=1" > "$R/etc/wireguard-ops-cockpit/forgejo.env"; chmod 0600 "$R/etc/wireguard-ops-cockpit/forgejo.env"
 
 "$HELPER" restore "$N1" > "$FIX/r1.out" 2> "$FIX/r1.err"; rc=$?
 check "restore rc=0" "$rc" "$(cat "$FIX/r1.err")"
@@ -112,6 +124,13 @@ check "restore rc=0" "$rc" "$(cat "$FIX/r1.err")"
 echo "SECRET=1" > "$R/etc/wireguard-ops-cockpit/api.env.expect"
 check "secrets untouched by restore" "$(grep -q "SECRET=2" "$R/etc/wireguard-ops-cockpit/api.env" && echo 0 || echo 1)" ""
 check "foreign tool untouched by restore" "$(grep -q "other v2" "$R/usr/local/sbin/other-tool" && echo 0 || echo 1)" ""
+ENVD="$R/etc/wireguard-ops-cockpit"
+check "env dir rights back (0710 0:4242, api.env 0600 0:0, CA 0640 0:4242)" \
+  "$([ "$(stat -c '%a %u:%g' "$ENVD" "$ENVD/api.env" "$ENVD/forgejo-ca.crt" | tr '\n' ' ')" = "710 0:4242 600 0:0 640 0:4242 " ] && echo 0 || echo 1)" \
+  "$(stat -c '%a %u:%g %n' "$ENVD" "$ENVD/api.env" "$ENVD/forgejo-ca.crt" | tr '\n' ' ')"
+check "restore names the rights it put back" "$(grep -q '"rights": \[' "$FIX/r1.out" && grep -q 'forgejo-ca.crt' "$FIX/r1.out" && echo 0 || echo 1)" "$(cat "$FIX/r1.out")"
+check "an env file added since stays (content and rights)" "$([ "$(stat -c '%a' "$ENVD/forgejo.env")" = 600 ] && grep -q NEW=1 "$ENVD/forgejo.env" && echo 0 || echo 1)" ""
+rm -f "$ENVD/forgejo.env"
 echo "SECRET=1" > "$R/etc/wireguard-ops-cockpit/api.env"; rm -f "$R/etc/wireguard-ops-cockpit/api.env.expect"
 echo "not ours" > "$R/usr/local/sbin/other-tool"
 AFTER="$(fingerprint)"
