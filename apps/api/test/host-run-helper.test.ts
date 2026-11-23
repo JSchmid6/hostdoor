@@ -953,6 +953,28 @@ describe("cockpit-host-run: door", () => {
     expect(existsSync(path.join(dir, "never"))).toBe(false);
   });
 
+  it("a check with `cmd | grep -q` passes on a hit although cmd dies of SIGPIPE (no pipefail in checks)", () => {
+    // `yes` schreibt endlos: grep -q schliesst die Pipe beim ersten Treffer, yes endet mit 141.
+    run(["start"], request(manifest({ checks: [{ name: "hit", run: "set -eu; yes | grep -q y", timeoutSeconds: 30 }] })));
+    const { state } = status();
+    expect(state.status).toBe("success");
+    expect(state.checks[0]).toMatchObject({ status: "passed", exitCode: 0 });
+  });
+
+  it("a check with `cmd | grep -q` still fails when grep finds nothing", () => {
+    run(["start"], request(manifest({ checks: [{ name: "miss", run: "set -eu; echo abc | grep -q zzz", timeoutSeconds: 30 }] })));
+    const { state } = status();
+    expect(state.status).toBe("check_failed");
+    expect(state.checks[0]).toMatchObject({ status: "failed", exitCode: 1 });
+  });
+
+  it("steps keep pipefail: a failing source in a pipe stops the run", () => {
+    run(["start"], request(manifest({ steps: [{ name: "pipe", run: "false | cat", timeoutSeconds: 30 }] })));
+    const { state } = status();
+    expect(state.status).toBe("failed");
+    expect(state.steps[0].status).toBe("failed");
+  });
+
   it("reports failing checks as check_failed", () => {
     run(["start"], request(manifest({ checks: [{ name: "impossible", run: "test -f /nonexistent/marker", timeoutSeconds: 30 }] })));
     const { state } = status();
