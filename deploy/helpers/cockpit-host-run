@@ -576,9 +576,13 @@ function resume() {
 // Obergrenze onHardCap, und wartet weiter, bis bash selbst endet.
 let uninterruptibleRunning = 0;
 function guarded(callback) { return () => { try { callback(); } catch (error) { log(`== notice failed: ${error?.message ?? error}`); } }; }
-function runScript(script, timeoutSeconds, { uninterruptible = false, onOverrun = () => {}, onHardCap = () => {} } = {}) {
+// pipefail: Schritte laufen mit `-eo pipefail` (ein Fehler mitten in einer Pipe stoppt den Lauf).
+// Prüfschritte laufen nur mit `-e`: `cmd | grep -q x` beendet die Pipe beim ersten Treffer, `cmd` bekommt
+// SIGPIPE und endet mit 141 — unter pipefail meldete der Check genau dann Fehler, wenn der Treffer da ist
+// (Runbook b9ae6929, t_8df5f9af). Der Check urteilt über den letzten Befehl der Pipe.
+function runScript(script, timeoutSeconds, { uninterruptible = false, pipefail = true, onOverrun = () => {}, onHardCap = () => {} } = {}) {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+    const child = spawn("/bin/bash", ["--noprofile", "--norc", pipefail ? "-eo" : "-e", ...(pipefail ? ["pipefail"] : []), "-c", script], {
       cwd: "/", detached: true, stdio: ["ignore", "pipe", "pipe"],
       env: { PATH: STEP_PATH, LANG: "C.UTF-8", HOME: "/root", DEBIAN_FRONTEND: "noninteractive", NEEDRESTART_MODE: "a", ...stepEnv },
     });
@@ -1081,7 +1085,7 @@ async function payload(jobId) {
     // Wiederholt wird nur nach einem ändernden Lauf; ein lesender Lauf hat nichts neu gestartet.
     const settleUntil = Date.now() + (manifest.mutates ? CHECK_SETTLE_SECONDS * 1000 : 0);
     let attempts = 1;
-    let result = await runScript(check.run, check.timeoutSeconds, { uninterruptible });
+    let result = await runScript(check.run, check.timeoutSeconds, { uninterruptible, pipefail: false });
     // Ein Prüfschritt, den die Erkennung als ändernd markiert, läuft genau einmal:
     // ein Wiederholen könnte den Zustand ein zweites Mal ändern.
     if (uninterruptible && result.code !== 0 && !result.timedOut && Date.now() + CHECK_RETRY_MS <= settleUntil) {
@@ -1091,7 +1095,7 @@ async function payload(jobId) {
       log(`== ${now()} check ${index + 1}/${manifest.checks.length}: ${check.name} exited ${result.code}; retry in ${CHECK_RETRY_MS / 1000} s (settle window ${CHECK_SETTLE_SECONDS} s)`);
       await new Promise((resolve) => setTimeout(resolve, CHECK_RETRY_MS));
       attempts += 1;
-      result = await runScript(check.run, check.timeoutSeconds, { uninterruptible });
+      result = await runScript(check.run, check.timeoutSeconds, { uninterruptible, pipefail: false });
     }
     const ok = result.code === 0 && !result.timedOut;
     if (!ok && attempts > 1) log(`== ${now()} check ${index + 1}/${manifest.checks.length}: ${check.name} still failing after ${attempts} attempts — failed`);

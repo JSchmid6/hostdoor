@@ -470,7 +470,11 @@ den vorigen Stand zeigt die API nicht — sie zeigt immer die ganzen Dateien.
   eigenes Zeitlimit (Standard 1800 s, höchstens 10 800 s; ein abbrechbarer Schritt, der es reißt,
   wird beendet und ist gescheitert, auch mit Exit 0 — ein unterbrechungssicherer nie, 3a), der
   erste Fehler beendet den Lauf,
-- danach die Prüfschritte (Pflicht, jeder muss scheitern können),
+- danach die Prüfschritte (Pflicht, jeder muss scheitern können); sie laufen mit `bash -e`, **ohne**
+  `pipefail`: `cmd | grep -q x` darf nicht an SIGPIPE (Exit 141) von `cmd` scheitern, der Treffer
+  wäre sonst der Fehler (Runbook b9ae6929, Karte t_8df5f9af). Ein Check urteilt über den letzten
+  Befehl einer Pipe; ein Fehler der Quelle muss er selbst abfragen (Ausgabe in eine Variable,
+  `out=$(cmd)`, dann `grep -q x <<<"$out"`),
 - volle Ausgabe in `/var/lib/wireguard-ops-cockpit/host-runs/<job>/output.log` (0600) und ins
   Journal der Unit, ohne Steuerzeichen, **zeilenweise geschwärzt**: Token-Muster, `password=`/`token=`/`secret=`-
   Zuweisungen, Authorization-Kopfzeilen, private Schlüsselblöcke und die wörtlichen Werte aus
