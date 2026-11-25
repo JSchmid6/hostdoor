@@ -1,118 +1,123 @@
-# wireguard-ops-cockpit
+# hostdoor
 
-WireGuard-only operations cockpit for VPS administration with persistent `tmux` sessions, browser access, bounded runbooks, and agent orchestration for tools such as GitHub Copilot and custom agents.
+**A secure host cockpit for AI agents: planner → doorkeeper → operator approval → runner → verifier, with a way back.**
 
-The repository now includes a first working implementation slice:
+*Sicheres Host-Cockpit für KI-Agenten: Planer → Türsteher → Operator-Freigabe → Runner → Verifier, mit Rückweg.*
 
-- a small React web UI
-- a Node.js/Fastify control API
-- SQLite-backed state for users, sessions, jobs, approvals, and audits
-- explicit `tmux` session management
-- bounded host runbooks for disk checks, Nextcloud planning, manifest-bound Nextcloud rollback, and selected service restarts
-- a public `planner-agent` plus a supervised session repair agent, both staying advisory-only behind approvals and bounded runbooks
-- a `ttyd`-backed browser terminal bridge for task-scoped `tmux` sessions
+hostdoor lets an AI agent administer real Linux hosts (package and kernel updates, Docker services, GitLab upgrades, backups) as root, without handing it a shell or a sudo rule. The agent writes a plan; an isolated reviewer reads the concrete steps; a signed envelope opens exactly that plan once; a snapshot or a fresh backup is the way back; an independent verifier decides whether the job really succeeded. The human operator is asked only when the reviewer has an evidenced finding, when the plan declares a real risk, or when backups would be deleted.
 
-## Current implementation boundaries
+Formerly **wireguard-ops-cockpit**. The repository, the install directory (`/opt/wireguard-ops-cockpit`), the systemd units (`wireguard-ops-cockpit-*`) and the npm workspaces (`@wireguard-ops-cockpit/*`) still carry that name.
 
-This first pass keeps the trust boundaries explicit:
+## What it is not
 
-- the web UI is never the privilege boundary
-- application login still matters even on WireGuard-only networks
-- `tmux` sessions are first-class
-- browser terminal attachment is represented through an external ttyd-compatible URL, not hidden shell access
-- privileged host behavior runs only through bounded host helpers, approvals, and narrow `sudoers` rules
-- Hermes requests become durable jobs with a structured explanation of intent, phase, completed work, evidence, blockers, and the exact action needed to continue
-- planner output never creates sudo policy or permanently registers a generated runbook; missing privilege fails closed
-- trusted operator intent is separated from untrusted mail/web/log/document evidence and bound with reviews, capabilities, actor, session, and expiry in an execution envelope
-- runner success is independently verified before a mutating Hermes job becomes `completed`
-- Hermes may author new versioned capability manifests at runtime; tool commands remain agent-owned while a generic OS sandbox enforces signed effect scope, snapshots, network isolation, and risk approval
-- Hermes uses a dedicated hashed-at-rest bearer token restricted to its job and bounded discovery routes; interactive administrator credentials are separate and automation cannot approve jobs
+- **Not a WireGuard manager.** WireGuard only appears because the cockpit listens on a private VPN interface instead of the public internet. It does not configure peers or tunnels.
+- **Not related to [Cockpit](https://cockpit-project.org/)** (the Red Hat web console). Different project, different purpose.
+- **Not a general agent framework.** It is the door between an agent and a host: lock, doorkeeper, safety net, audit.
+- **Not a finished product.** See [Deployment status](#deployment-status).
 
-## Repository structure
+## Architecture
 
-- `apps/api/` - Fastify control API, SQLite storage, auth, sessions, audits, approvals, runbooks, agents
-- `apps/agent-broker/` - isolated Planner/Research/Safety/Verifier process broker under `cockpit-agent`, and the same code as the Runner broker under its own identity `cockpit-runner`
-- `apps/executor-broker/` - HMAC-authenticated typed capability executor under `cockpit-executor`
-- `apps/web/` - React cockpit UI shell
-- `packages/domain/` - shared domain types
-- `packages/tmux-adapter/` - safe local `tmux` adapter with disabled fallback
-- `doc/` - charter, architecture, rollout, and Copilot/Squad guidance
-- `.github/workflows/` - cloud-agent setup workflow
-- `.github/skills/` and `.squad/` - repo-local implementation guidance and memory
+```
+  agent (e.g. a chat assistant)          operator (browser, phone)
+        │ intent, bearer token                 │ admin session
+        ▼                                      ▼
+ ┌──────────────────────────── control API ─────────────────────────────┐
+ │                                                                      │
+ │  planner ──► plan + host-run manifest (steps, checks, rollback, risk)│
+ │                   │                                                  │
+ │                   ▼                                                  │
+ │  doorkeeper: isolated safety review of the concrete steps            │
+ │     pass ─────────────────────────┐                                  │
+ │     evidenced finding / declared  │                                  │
+ │     risk / backup deletion ──► "waiting for you" ──► operator ──┐    │
+ │     incomplete material ──► stop  │                     approve │    │
+ │                                   ▼                             ▼    │
+ │            HMAC envelope: bound to the manifest hash, expiring       │
+ └───────────────────────────────────┬──────────────────────────────────┘
+                                     │ typed request, Unix socket
+                                     ▼
+ executor broker ──► sudo static root helper (start | status only)
+                                     │ checks the envelope again
+                                     ▼
+ transient systemd unit:  safety net first, then steps and checks
+   vps:  last borg backup ≤ 30 h + machine snapshot at the hoster
+   lab0: local host snapshot, backup disks mounted read-only
+   box:  host snapshot + a snapshot of every Proxmox guest
+                                     │
+                                     ▼
+ verifier: independent check of the outcome ──► job completed / failed
+```
 
-## Source of truth
+Planner, research, doorkeeper and verifier run as one unprivileged identity, the runner as another; neither holds sudo, the envelope secret or the cockpit's configuration. Details: [`doc/services/target-architecture.md`](doc/services/target-architecture.md), [`doc/services/execution-control-model.md`](doc/services/execution-control-model.md), [`doc/setup/host-run.md`](doc/setup/host-run.md) (German).
 
-Read these first:
+## Security guarantees
 
-1. `doc/setup/project-charter.md`
-2. `doc/services/target-architecture.md`
-3. `doc/migration/implementation-plan.md`
-4. `doc/setup/copilot-squad-adoption.md`
-5. `doc/migration/copilot-cloud-agent-brief.md`
-6. `doc/setup/agent-stack.md`
-7. `doc/services/execution-control-model.md`
+The guarantees G1–G10 are binding for every change at the door. They are listed in [`doc/setup/self-update.md` → "The guarantees and the one door"](doc/setup/self-update.md#the-guarantees-and-the-one-door):
 
-## Quick start
+| | |
+| --- | --- |
+| G1 Approval | only the admin session approves; an agent token never approves |
+| G2 Lock | HMAC envelope bound to plan and manifest hash, with expiry, checked by the root helper |
+| G3 Doors | `host.run` is the one general door; everything else stays typed and narrow |
+| G4 Root helpers and sudoers | static, narrow, version-controlled; the runner never creates sudo policy |
+| G5 Sandbox and safety net | no mutating run without the safety net of its instance role |
+| G6 Secrets | redaction of outputs, logs and prompts |
+| G7, G8 | self-update path, dependencies |
+| G9 Doorkeeper | isolated review, a pass only on complete material, findings classes never narrowed |
+| G10 Backups and declared risk | deleting, pruning or shortening backups and declared risks need the operator |
 
-1. Copy `.env.example` to `.env`
-2. Change `COCKPIT_ADMIN_PASSWORD`
-3. Make sure GitHub Copilot CLI or OpenCode is installed and authenticated if you want a real `planner-agent` runtime
-4. Install dependencies
-5. Start the API and web UI in separate terminals
+A pull request that touches the door's files must state which guarantees it touches and why each still holds (`.github/workflows/pr-guarantees.yml`). The cockpit updates itself only through a typed self-update that reviews the exact diff before installing it ([`doc/setup/self-update.md`](doc/setup/self-update.md)).
+
+Honest limits are documented next to each guarantee, for example: credentials readable inside the agent's container make the doorkeeper, not the network, the real safeguard; a snapshot undoes damage, not exfiltration.
+
+## Deployment status
+
+- In daily production use for **one household**: a rented VPS, a home server that holds the backups, and a Proxmox host, each with its own cockpit instance (roles `vps`, `lab0`, `box`).
+- All agent roles (planner, research, doorkeeper, runner, verifier) run on **Claude** via Claude Code. If Claude is unavailable, opencode with another model stands in and the job is marked `NOTBETRIEB` (emergency mode) for the operator.
+- The operator is asked for decisions, not for routine clicks: most jobs run on the doorkeeper's pass.
+- Single maintainer, no releases, no stability promise. Many design documents are in German.
+
+## Quick start (local, no real host)
+
+Requirements: Node.js 22.23.4 (`.node-version`; `better-sqlite3` is a native module), `tmux` optional.
+
+```bash
+git clone https://github.com/JSchmid6/wireguard-ops-cockpit.git hostdoor
+cd hostdoor
+cp .env.example .env
+# set COCKPIT_ADMIN_PASSWORD, and COCKPIT_PLANNER_RUNTIME=demo-local for a planner without any LLM
+npm install
+npm run dev:api     # http://127.0.0.1:3001
+npm run dev:web     # http://127.0.0.1:5173
+```
+
+Or with Docker Compose (development only, no host helpers):
 
 ```bash
 cp .env.example .env
-npm install
-npm run dev:api
-npm run dev:web
+docker compose up
 ```
 
-Planner runtime notes:
+A plan reaches the door as a `host-run` manifest. Example (from the tests; nothing here touches a host unless an instance is installed):
 
-- default planner runtime: `COCKPIT_PLANNER_RUNTIME=copilot-cli`
-- OpenCode runtime: `COCKPIT_PLANNER_RUNTIME=opencode`
-- fallback planner runtime: `COCKPIT_PLANNER_RUNTIME=demo-local`
-- default Copilot executable: `COCKPIT_COPILOT_EXECUTABLE=copilot`
-- optional Copilot model pin: `COCKPIT_COPILOT_MODEL=gpt-5.4`
-- default OpenCode executable: `COCKPIT_OPENCODE_EXECUTABLE=opencode`
-- optional OpenCode model pin: `COCKPIT_OPENCODE_MODEL=openai/gpt-4o`
-- optional safety model pin: `COCKPIT_SAFETY_OPENCODE_MODEL=anthropic/claude-sonnet-4`; health warns when it matches the planner model
-- optional strict diversity: `COCKPIT_REQUIRE_MODEL_DIVERSITY=true`
-- approval TTL and circuit breaker: `COCKPIT_APPROVAL_TTL_MINUTES=30`, `COCKPIT_MAX_FAILED_CHANGES_PER_HOUR=3` (per operation), `COCKPIT_MAX_FAILED_CHANGES_PER_HOUR_GLOBAL=10` (all operations); only failures after the execution started count (`doc/services/execution-control-model.md`)
-- optional public web address for direct links to "Wartet auf dich" cards: `COCKPIT_WEB_URL=http://10.0.0.1:5173` (not a secret; see `doc/setup/wartet-auf-dich.md`)
-- set a distinct `COCKPIT_EXECUTION_ENVELOPE_SECRET`; it HMAC-signs reviewed Hermes envelopes and is removed from planner, runner, and verifier environments
-- production uses two local Unix sockets: `COCKPIT_AGENT_BROKER_SOCKET` and `COCKPIT_EXECUTOR_BROKER_SOCKET`; neither opens a network listener
-- `COCKPIT_EXECUTOR_BROKER_SECRET` authenticates short-lived typed executor requests and must be shared only by Control and Executor
-- the planner runtime is intentionally bounded to plan-only usage; host mutation still stays behind approvals and bounded runbooks
-- runbook plans now attach a reviewable safety report in Session detail; high-risk plans stay blocked or pending approval until that review path clears
-- runbook cards now expose reviewed workflow steps so multi-step flows such as Nextcloud maintenance can stay visible in the dashboard
-- the Nextcloud maintenance path is now split into bounded preflight, maintenance-mode, occ-upgrade, maintenance-exit, verification, and optional restart runbooks instead of one larger follow-up step
-- Nextcloud rollback is now a separate reviewed restore plus verify path that only reads an approved manifest under the bounded backup root before maintenance mode is cleared again
-- the supervised repair agent now carries an explicit checkpoint contract in the execution plan and a reviewable checkpoint state in the launched job, so the dashboard can show and advance structured operator checkpoints without turning the agent into the privilege boundary
-- the supervised repair agent runs in the same tmux task context, but it still needs launch approval and cannot authorize or execute host mutation on its own
-- Copilot CLI must already be authenticated; classic `ghp_` PATs are not accepted by Copilot CLI, so use `/login`, `gh auth login`, or a fine-grained token instead
+````
+```host-run
+{
+  "version": "cockpit-host-run/v1",
+  "name": "apt maintenance",
+  "purpose": "update packages from the configured sources",
+  "mutates": true,
+  "steps":  [{ "name": "upgrade", "run": "apt-get update && apt-get -y upgrade" }],
+  "checks": [{ "name": "nothing pending", "run": "test -z \"$(apt list --upgradable 2>/dev/null | tail -n +2)\"" }],
+  "rollback": ["downgrade the upgraded packages to the versions in /var/log/apt/history.log"],
+  "risk": ["contained"]
+}
+```
+````
 
-Default endpoints:
+A manifest without a rollback is refused. A declared risk other than `contained` (`exposure`, `data_loss`, `identity_or_secret`) always goes to the operator. More examples, including ones the doorkeeper must flag: [`apps/api/test/fixtures/host-run-review-cases.json`](apps/api/test/fixtures/host-run-review-cases.json).
 
-- API: `http://127.0.0.1:3001`
-- Web: `http://127.0.0.1:5173`
-
-Default login comes from `.env`:
-
-- username: `admin`
-- password: `change-me-now`
-
-## Execution plan integration notes
-
-- runbook execution and agent launch now create a persisted execution plan before dispatch
-- session detail exposes planner, safety, policy, and hook state for each plan
-- approval dispatch revalidates the exact approved plan hash, session binding, and requester binding before bounded execution continues
-
-## Upgrade note for existing SQLite state
-
-- the API adds `cockpit_sessions.owner_id` automatically when an older database is opened
-- legacy sessions with `owner_id = NULL` stay fail-closed and do not appear in `/api/sessions` until they are claimed again
-- reclaim a legacy session by creating or resuming the same session name after login as the intended operator, or migrate `owner_id` explicitly outside the app before rollout
+Installing on a real host is deliberately not a one-liner: see [`doc/setup/vps-handover.md`](doc/setup/vps-handover.md), [`deploy/lab0/`](deploy/lab0/) and [`doc/setup/box-bootstrap.md`](doc/setup/box-bootstrap.md).
 
 ## Build and test
 
@@ -120,69 +125,23 @@ Default login comes from `.env`:
 npm run build
 npm run test
 npm run coverage
-npm run check
+npm run check      # build + test, the CI gate
 ```
 
-`npm run test` covers the shared tmux adapter plus the API and web workspaces. `npm run check` is the same build-and-test gate used by CI.
-`npm run coverage` enforces workspace-specific coverage thresholds for the tmux adapter, API, and web UI and is also run in CI.
-Production and local verification must use the same Node.js 22.23.4 runtime because `better-sqlite3` is a native module.
+## Repository structure
 
-## Docker Compose development
+- `apps/api/` – control API (Fastify, SQLite): auth, jobs, approvals, audit, planner/doorkeeper/verifier orchestration
+- `apps/agent-broker/` – isolated broker for the agent roles; the same code serves the runner under its own identity
+- `apps/executor-broker/` – HMAC-authenticated typed capability executor
+- `apps/web/` – operator UI, start page "Wartet auf dich" (waiting for you)
+- `deploy/` – static root helpers, systemd units, sudoers, deploy scripts per instance role
+- `doc/` – architecture, guarantees, setup ([index](doc/README.md))
+- `AGENTS.md` – rules for coding agents working on this repository
 
-The repository includes a small `docker-compose.yml` for app-level development:
+## Security
 
-```bash
-cp .env.example .env
-docker compose up
-```
+Please report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
-Notes:
+## License
 
-- the compose setup is for repository development, not production deployment
-- `tmux` behavior inside containers is intentionally local to the app runtime
-- host-coupled privileged helpers are implemented only in the VPS host-runtime path, not in the dev compose stack
-
-## VPS deployment handover
-
-For a host-local bring-up path that a Copilot instance on the VPS can execute, use the production-oriented files below instead of the dev compose stack:
-
-- `.env.vps.example`
-- `docker-compose.vps.yml`
-- `Dockerfile.api`
-- `Dockerfile.web`
-- `doc/setup/vps-handover.md`
-
-Minimal flow:
-
-```bash
-cp .env.vps.example .env
-sudo apt-get install -y tmux ttyd
-curl -fsSLO https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz
-sudo tar -C /opt -xf node-v22.23.4-linux-x64.tar.xz
-sudo systemctl enable --now wireguard-ops-cockpit-api wireguard-ops-cockpit-ttyd
-docker compose --env-file .env -f docker-compose.vps.yml up -d --build web
-```
-
-Important notes:
-
-- set `COCKPIT_BIND_IP` to the WireGuard IP on the VPS before startup
-- set `COCKPIT_TMUX_MODE=auto` for the host runtime
-- install and authenticate GitHub Copilot CLI or OpenCode on the VPS if the planner runtime should be real instead of `demo-local`
-- set `COCKPIT_TTYD_BASE_URL=/terminal` and a unique `COCKPIT_TERMINAL_SIGNING_SECRET`
-- set `COCKPIT_COOKIE_SECURE=true` only when the stack is behind HTTPS
-- the dashboard stays bound to the WireGuard IP while API and ttyd stay on `127.0.0.1`
-
-## Terminal bridge
-
-Set `COCKPIT_TTYD_BASE_URL=/terminal` and run the host-side `wireguard-ops-cockpit-ttyd` service to expose browser attachment URLs in the UI. The bridge validates a signed session token and attaches only to registered cockpit `tmux` sessions.
-
-## Cloud build readiness
-
-The repository includes both:
-
-- `.github/workflows/copilot-setup-steps.yml` for GitHub Copilot cloud agent
-- `.github/workflows/ci.yml` for repository build/test validation on push and pull request
-- `.devcontainer/` for Codespaces and reproducible local container development
-- `.github/agents/`, `.github/skills/`, and `.squad/` for agent and Squad bootstrap
-
-Run `squad init` in a real development environment if you want Squad to generate and validate its expected repo-local files.
+[MIT](LICENSE)
