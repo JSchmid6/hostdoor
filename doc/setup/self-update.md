@@ -24,7 +24,9 @@ Changing `deploy/helpers/cockpit-host-run`,
 ## Scope
 
 The module rolls out one commit of the allowlisted repository
-(`JSchmid6/wireguard-ops-cockpit`) that is already merged into `origin/main`.
+(`JSchmid6/hostdoor`, formerly `JSchmid6/wireguard-ops-cockpit`; the runner
+and the VPS deploy script accept either GitHub URL as the checkout's origin,
+card t_05754d79) that is already merged into `origin/main`.
 It runs the same reviewed `homeserver-cockpit-deploy.sh` a human would run, with
 `REPO_COMMIT=<sha>` and `COCKPIT_RESTART_MODE=defer`. It does not merge, does
 not fetch unreviewed code, and does not touch anything outside the deploy
@@ -435,8 +437,12 @@ stopped twice on what the first had already cleared (PR #64, t_ff43a907). When a
 self-update review comes to `finding` or `incomplete`, the running Cockpit looks
 on GitHub itself — never at what the requester says — for proof that **every**
 installed commit is exactly a reviewed pull request. All of it, per binding
-`base..sha`, from the unauthenticated API of `JSchmid6/wireguard-ops-cockpit`
-(bounded, 15 s per request):
+`base..sha`, from the unauthenticated API of this repository, addressed by its
+immutable id (`/repositories/1214926797/...`, `SECOND_REVIEW_REPOSITORY_ID`), not
+by its name: it answers the same before and after the rename to `hostdoor`
+without a redirect (the reader keeps `redirect: "error"`), and a name could be
+taken again by another repository, the id cannot (card t_05754d79). Bounded,
+15 s per request:
 
 1. The first-parent line from `sha` down to `base` (`GET /commits/<c>`, walking
    the first parent) holds at most `SECOND_REVIEW_MAX_MERGES` = 8 commits and
@@ -446,7 +452,7 @@ installed commit is exactly a reviewed pull request. All of it, per binding
    squash merges never did). A commit on the line that is not proven breaks the
    proof; so does a longer line or one that never reaches `base`.
 2. For each commit `c` with first parent `p`: `GET /commits/<c>/pulls` names a
-   pull request into `main` of this repository, merged, with
+   pull request into `main` of this repository (`base.repo.id` is that id), merged, with
    `merge_commit_sha == c`. A merge commit has exactly two parents and the PR's
    `head.sha` is the second; a squash merge has one parent and the PR names its
    head.

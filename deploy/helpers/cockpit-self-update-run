@@ -61,9 +61,10 @@
 #
 # Security contract:
 #   * Exactly one full lowercase 40-hex commit from the allowlisted
-#     repository https://github.com/JSchmid6/wireguard-ops-cockpit.git;
-#     nothing else is accepted, and the commit must be an ancestor of
-#     origin/main.
+#     repository https://github.com/JSchmid6/hostdoor.git (formerly
+#     https://github.com/JSchmid6/wireguard-ops-cockpit.git; a checkout may
+#     carry either name as origin, both are the same repository); nothing
+#     else is accepted, and the commit must be an ancestor of origin/main.
 #   * deploy only with the reviewed diff hash: a bare-sha instance (no
 #     review) is refused with 65, and so is any hash that does not match the
 #     diff recomputed right before the deploy script would run.
@@ -225,7 +226,13 @@ SYSTEMD_RUN = env("COCKPIT_SELF_UPDATE_SYSTEMD_RUN", "/usr/bin/systemd-run")
 CURL = env("COCKPIT_SELF_UPDATE_CURL", "/usr/bin/curl")
 IP = env("COCKPIT_SELF_UPDATE_IP", "/usr/sbin/ip")
 DOCKER = env("COCKPIT_SELF_UPDATE_DOCKER", "/usr/bin/docker")
-ALLOWED_REMOTE = env("COCKPIT_SELF_UPDATE_ALLOWED_REMOTE", "https://github.com/JSchmid6/wireguard-ops-cockpit.git")
+# The two names of the one repository (renamed wireguard-ops-cockpit -> hostdoor,
+# card t_05754d79): a host keeps its old origin until its own switch, and GitHub
+# redirects fetches of the old name. The override stays exactly one remote.
+ALLOWED_REMOTES = (
+    (os.environ["COCKPIT_SELF_UPDATE_ALLOWED_REMOTE"],) if os.environ.get("COCKPIT_SELF_UPDATE_ALLOWED_REMOTE")
+    else ("https://github.com/JSchmid6/hostdoor.git", "https://github.com/JSchmid6/wireguard-ops-cockpit.git")
+)
 ACTIVATION_DELAY = int(env("COCKPIT_SELF_UPDATE_ACTIVATION_DELAY", "600"))
 # How long the activation waits for the run lock (a deployment usually holds it
 # well below this — its unit has no time limit since 11.10.2026 —, a review diff
@@ -360,7 +367,7 @@ def check_repo_and_commit(sha):
     if not os.path.isdir(os.path.join(REPO_DIR, ".git")):
         raise Failure(67, "check", "pinned checkout is missing: %s" % REPO_DIR)
     remote = git("remote", "get-url", "origin", timeout=30)
-    if remote.returncode != 0 or remote.stdout.strip() != ALLOWED_REMOTE:
+    if remote.returncode != 0 or remote.stdout.strip() not in ALLOWED_REMOTES:
         raise Failure(65, "check", "checkout origin is not the allowlisted repository (%s)" % (remote.stdout.strip() or "unreadable"))
     fetch = run([GIT, "-C", REPO_DIR, "fetch", "--quiet", "origin"], timeout=300,
                 env_extra={"GIT_TERMINAL_PROMPT": "0"})

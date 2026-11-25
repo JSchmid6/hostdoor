@@ -249,6 +249,25 @@ check "Build-Fehler: Checkout wieder auf A" '[ "$(git -C "$FIX/repo" rev-parse H
 fresh_host; code=0; deploy "$SEITE" now || code=$?
 check "Nicht gemergt: Exit 65, nichts angefasst" '[ "$code" = 65 ] && [ "$(after_sums)" = "$(cat "$FIX/vorher.sums")" ] && [ "$(git -C "$FIX/repo" rev-parse HEAD)" = "$A" ]'
 
+# 5b: without the harness override both names of the one repository pass the origin
+# check (rename wireguard-ops-cockpit -> hostdoor, card t_05754d79), nothing else.
+# GIT_ALLOW_PROTOCOL=file keeps it offline: an accepted GitHub origin ends at the fetch.
+deploy_default_origin() { # deploy_default_origin <origin-url> <sha>
+  git -C "$FIX/repo" remote set-url origin "$1"
+  env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root REPO_COMMIT="$2" COCKPIT_RESTART_MODE=defer GIT_ALLOW_PROTOCOL=file \
+    VPS_DEPLOY_ROOT="$FIX/root" VPS_DEPLOY_REPO="$FIX/repo" \
+    VPS_DEPLOY_SYSTEMCTL="$FIX/stub/systemctl" VPS_DEPLOY_VISUDO="$FIX/stub/visudo" VPS_DEPLOY_DOCKER="$FIX/stub/docker" \
+    bash "$FIX/repo/deploy/vps/vps-cockpit-deploy.sh" > "$FIX/out.log" 2>&1
+}
+for url in https://github.com/JSchmid6/hostdoor.git https://github.com/JSchmid6/wireguard-ops-cockpit.git; do
+  fresh_host; code=0; deploy_default_origin "$url" "$B" || code=$?
+  check "Origin $url: Prüfung bestanden (scheitert erst am Abruf), nichts angefasst" '[ "$code" != 0 ] && [ "$code" != 65 ] && ! grep -q "origin is not the allowlisted repository" "$FIX/out.log" && [ "$(after_sums)" = "$(cat "$FIX/vorher.sums")" ]'
+done
+for url in "$FIX/origin.git" https://github.com/evil/hostdoor.git https://github.com/JSchmid6/hostdoor; do
+  fresh_host; code=0; deploy_default_origin "$url" "$B" || code=$?
+  check "Origin $url ohne Override: Exit 65, nichts angefasst" '[ "$code" = 65 ] && grep -q "origin is not the allowlisted repository" "$FIX/out.log" && [ "$(after_sums)" = "$(cat "$FIX/vorher.sums")" ]'
+done
+
 # 6: deferred restart (the runner activates later), web unit already active
 fresh_host; : > "$FIX/web-active"; code=0; deploy "$B" defer || code=$?
 check "Defer: Exit 0, installiert, kein Neustart" '[ "$code" = 0 ] && [ "$(count_B)" -gt 20 ] && ! grep -q "^systemctl restart" "$FIX/calls.log"'

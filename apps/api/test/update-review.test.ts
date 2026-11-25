@@ -26,7 +26,8 @@ import {
   verifyQuotes,
   verifySecondReview,
   SECOND_REVIEW_MAX_MERGES,
-  SECOND_REVIEW_REPOSITORY,
+  SECOND_REVIEW_REPOSITORY_ID,
+  SECOND_REVIEW_REPOSITORY_PATH,
   type GithubFetch,
   type UpdateDiff,
   type UpdateFocusArea,
@@ -1025,13 +1026,14 @@ describe("server-dienste review prompt cases (fixture, real model answers, no mo
 describe("second review: the pre-install review reports instead of stopping (4b)", () => {
   const HEAD = "fedcba9876543210fedcba9876543210fedcba98";
   const TREE = "1".repeat(40);
-  const REPO = `/repos/${SECOND_REVIEW_REPOSITORY}`;
+  const REPO = SECOND_REVIEW_REPOSITORY_PATH;
+  const OURS = { id: SECOND_REVIEW_REPOSITORY_ID, full_name: "JSchmid6/wireguard-ops-cockpit" };
   const marker = `Cockpit-Zweitpruefung: FREIGABE ${HEAD} opus`;
   // The GitHub API as it answers for SHA = merge of PR #70 (head HEAD) onto BASE.
   function pages(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       [`${REPO}/commits/${SHA}`]: { sha: SHA, parents: [{ sha: BASE }, { sha: HEAD }], commit: { tree: { sha: TREE } } },
-      [`${REPO}/commits/${SHA}/pulls`]: [{ number: 70, merged_at: "2026-11-07T10:00:00Z", merge_commit_sha: SHA, head: { sha: HEAD }, base: { ref: "main", repo: { full_name: SECOND_REVIEW_REPOSITORY } } }],
+      [`${REPO}/commits/${SHA}/pulls`]: [{ number: 70, merged_at: "2026-11-07T10:00:00Z", merge_commit_sha: SHA, head: { sha: HEAD }, base: { ref: "main", repo: OURS } }],
       [`${REPO}/compare/${BASE}...${HEAD}`]: { status: "ahead", behind_by: 0, ahead_by: 2 },
       [`${REPO}/commits/${HEAD}`]: { sha: HEAD, parents: [{ sha: BASE }], commit: { tree: { sha: TREE } } },
       [`${REPO}/issues/70/comments?per_page=100`]: [{ body: `Zweitpruefung\n\n${marker}\n`, author_association: "OWNER", user: { login: "JSchmid6" }, html_url: "https://github.com/x/pull/70#c1" }],
@@ -1066,6 +1068,23 @@ describe("second review: the pre-install review reports instead of stopping (4b)
     expect(policy.evidence).toContain("pre-install review result: finding");
     expect(policy.evidence.some((line) => line.startsWith("pre-install review finding reported, not a stop"))).toBe(true);
     expect(summarizeUpdateReview([diff()], reviewed, null)).toMatchObject({ result: "finding", reported: true, secondReview: [check] });
+  });
+
+  // Rename wireguard-ops-cockpit -> hostdoor (card t_05754d79): the repository is
+  // bound by its id, the API is asked only under /repositories/<id> (a redirect
+  // stays an error), and the PR counts under either name.
+  it("binds the repository by its id: the proof holds under the old and the new name", async () => {
+    expect(SECOND_REVIEW_REPOSITORY_PATH).toBe(`/repositories/${SECOND_REVIEW_REPOSITORY_ID}`);
+    const asked: string[] = [];
+    const recording = (known: GithubFetch): GithubFetch => async (apiPath) => { asked.push(apiPath); return known(apiPath); };
+    for (const full_name of ["JSchmid6/wireguard-ops-cockpit", "JSchmid6/hostdoor"]) {
+      const pulls = `${REPO}/commits/${SHA}/pulls`;
+      const pr = (pages()[pulls] as Array<Record<string, unknown>>)[0];
+      const check = await verifySecondReview(binding, recording(github({ [pulls]: [{ ...pr, base: { ref: "main", repo: { ...OURS, full_name } } }] })));
+      expect(check, full_name).toMatchObject({ verified: true, pr: 70, headSha: HEAD });
+    }
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((apiPath) => apiPath.startsWith(`${REPO}/`))).toBe(true);
   });
 
   it("keeps the stop only for G10, an INJECTION and evidenced severe rights findings (severity cut, 13.11.2026)", async () => {
@@ -1151,8 +1170,12 @@ describe("second review: the pre-install review reports instead of stopping (4b)
       ["no PR", { [pulls]: [] }],
       ["PR not merged", { [pulls]: [{ ...pr, merged_at: null }] }],
       ["PR merged elsewhere", { [pulls]: [{ ...pr, merge_commit_sha: BASE }] }],
-      ["PR into another branch", { [pulls]: [{ ...pr, base: { ref: "dev", repo: { full_name: SECOND_REVIEW_REPOSITORY } } }] }],
-      ["PR from a fork's base", { [pulls]: [{ ...pr, base: { ref: "main", repo: { full_name: "evil/wireguard-ops-cockpit" } } }] }],
+      ["PR into another branch", { [pulls]: [{ ...pr, base: { ref: "dev", repo: OURS } }] }],
+      ["PR from a fork's base", { [pulls]: [{ ...pr, base: { ref: "main", repo: { id: 1, full_name: "evil/wireguard-ops-cockpit" } } }] }],
+      ["PR of another repository under the same name", { [pulls]: [{ ...pr, base: { ref: "main", repo: { id: 2, full_name: "JSchmid6/wireguard-ops-cockpit" } } }] }],
+      ["PR of another repository under the new name", { [pulls]: [{ ...pr, base: { ref: "main", repo: { id: 3, full_name: "JSchmid6/hostdoor" } } }] }],
+      ["PR whose base names no id", { [pulls]: [{ ...pr, base: { ref: "main", repo: { full_name: "JSchmid6/wireguard-ops-cockpit" } } }] }],
+      ["PR whose base id is a string", { [pulls]: [{ ...pr, base: { ref: "main", repo: { ...OURS, id: String(SECOND_REVIEW_REPOSITORY_ID) } } }] }],
       ["other head", { [pulls]: [{ ...pr, head: { sha: BASE } }] }],
       ["head behind base", { [`${REPO}/compare/${BASE}...${HEAD}`]: { status: "diverged", behind_by: 1 } }],
       ["merge changes the tree", { [`${REPO}/commits/${HEAD}`]: { commit: { tree: { sha: "2".repeat(40) } } } }],
@@ -1196,7 +1219,7 @@ describe("second review: the pre-install review reports instead of stopping (4b)
       const number = 100 + index;
       Object.assign(known, {
         [`${REPO}/commits/${merge}`]: { sha: merge, parents: [{ sha: parent }, { sha: head }], commit: { tree: { sha: tree } } },
-        [`${REPO}/commits/${merge}/pulls`]: [{ number, merged_at: "2026-11-13T10:00:00Z", merge_commit_sha: merge, head: { sha: head }, base: { ref: "main", repo: { full_name: SECOND_REVIEW_REPOSITORY } } }],
+        [`${REPO}/commits/${merge}/pulls`]: [{ number, merged_at: "2026-11-13T10:00:00Z", merge_commit_sha: merge, head: { sha: head }, base: { ref: "main", repo: OURS } }],
         [`${REPO}/compare/${parent}...${head}`]: { behind_by: 0 },
         [`${REPO}/commits/${head}`]: { sha: head, commit: { tree: { sha: tree } } },
         [`${REPO}/issues/${number}/comments?per_page=100`]: [{ body: `Cockpit-Zweitpruefung: FREIGABE ${head} opus`, author_association: "OWNER", user: { login: "JSchmid6" } }],

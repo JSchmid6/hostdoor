@@ -619,6 +619,26 @@ check "S8 foreign origin -> 65" "$([ "$rc" -eq 65 ] && echo 0 || echo 1)" "rc=$r
 COCKPIT_SELF_UPDATE_ALLOWED_REMOTE="$FIX/other.git" "$HELPER" diff "$C4" > /dev/null 2> "$FIX/s8-diff.err"; rc=$?
 check "S8 diff with foreign origin -> 65" "$([ "$rc" -eq 65 ] && echo 0 || echo 1)" "rc=$rc $(head -c 300 "$FIX/s8-diff.err")"
 
+# S8b: without the override both names of the one repository pass the origin
+# check (rename wireguard-ops-cockpit -> hostdoor, card t_05754d79), nothing else
+# does. GIT_ALLOW_PROTOCOL=file keeps the test offline: a GitHub origin that
+# passes the check ends at the fetch (67), a refused one before it (65).
+echo "--- S8b: both repository names without the override"
+env -u COCKPIT_SELF_UPDATE_ALLOWED_REMOTE "$HELPER" diff "$C4" > /dev/null 2> "$FIX/s8b-local.err"; rc=$?
+check "S8b default list refuses a local origin -> 65" "$([ "$rc" -eq 65 ] && echo 0 || echo 1)" "rc=$rc $(head -c 300 "$FIX/s8b-local.err")"
+for s8b_url in https://github.com/JSchmid6/hostdoor.git https://github.com/JSchmid6/wireguard-ops-cockpit.git \
+    https://github.com/JSchmid6/hostdoor https://github.com/evil/hostdoor.git; do
+  git -C "$CLONE" remote set-url origin "$s8b_url"
+  env -u COCKPIT_SELF_UPDATE_ALLOWED_REMOTE GIT_ALLOW_PROTOCOL=file "$HELPER" diff "$C4" > /dev/null 2> "$FIX/s8b.err"; rc=$?
+  case "$s8b_url" in
+    *JSchmid6/hostdoor.git|*JSchmid6/wireguard-ops-cockpit.git)
+      check "S8b $s8b_url passes the origin check (fetch -> 67)" "$([ "$rc" -eq 67 ] && grep -q 'git fetch failed' "$FIX/s8b.err" && echo 0 || echo 1)" "rc=$rc $(head -c 300 "$FIX/s8b.err")" ;;
+    *)
+      check "S8b $s8b_url refused -> 65" "$([ "$rc" -eq 65 ] && grep -q 'not the allowlisted repository' "$FIX/s8b.err" && echo 0 || echo 1)" "rc=$rc $(head -c 300 "$FIX/s8b.err")" ;;
+  esac
+done
+git -C "$CLONE" remote set-url origin "$ORIGIN"
+
 # --------------------------------------------------------------------------
 # S9: status (read-only) after the runs above
 # --------------------------------------------------------------------------
