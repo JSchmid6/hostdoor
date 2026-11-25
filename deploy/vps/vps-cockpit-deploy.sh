@@ -47,7 +47,10 @@ export PATH
 
 readonly ROOT="${VPS_DEPLOY_ROOT:-}"
 readonly REPO="${VPS_DEPLOY_REPO:-/opt/wireguard-ops-cockpit}"
-readonly ORIGIN="${VPS_DEPLOY_ORIGIN:-https://github.com/JSchmid6/wireguard-ops-cockpit.git}"
+# Both names of the one repository (renamed wireguard-ops-cockpit -> hostdoor, card
+# t_05754d79); the harness override stays exactly one origin.
+readonly ORIGIN="${VPS_DEPLOY_ORIGIN:-https://github.com/JSchmid6/hostdoor.git}"
+readonly ORIGIN_FORMER="${VPS_DEPLOY_ORIGIN:-https://github.com/JSchmid6/wireguard-ops-cockpit.git}"
 readonly SYSTEMCTL="${VPS_DEPLOY_SYSTEMCTL:-systemctl}"
 readonly VISUDO="${VPS_DEPLOY_VISUDO:-visudo}"
 readonly DOCKER="${VPS_DEPLOY_DOCKER:-docker}"
@@ -148,7 +151,8 @@ log() { echo "[vps-cockpit-deploy $(date -u +%H:%M:%S)] $*"; }
 [ "$(id -u)" -eq 0 ] || { log "needs root"; exit 67; }
 [[ "${REPO_COMMIT:-}" =~ ^[a-f0-9]{40}$ ]] || { log "REPO_COMMIT must be a full lowercase 40-hex sha"; exit 64; }
 cd "$REPO"
-[ "$(git remote get-url origin)" = "$ORIGIN" ] || { log "origin is not the allowlisted repository"; exit 65; }
+ACTUAL_ORIGIN="$(git remote get-url origin || true)"
+[ "$ACTUAL_ORIGIN" = "$ORIGIN" ] || [ "$ACTUAL_ORIGIN" = "$ORIGIN_FORMER" ] || { log "origin is not the allowlisted repository"; exit 65; }
 git fetch --quiet origin
 git merge-base --is-ancestor "$REPO_COMMIT" refs/remotes/origin/main || { log "$REPO_COMMIT is not merged into origin/main"; exit 65; }
 readonly OLD="$(git rev-parse HEAD)"

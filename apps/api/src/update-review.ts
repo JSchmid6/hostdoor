@@ -981,7 +981,14 @@ export function summarizeUpdateReview(diffs: UpdateDiff[], outcome: UpdateReview
 // posts it with the owner's token. Its worth is the binding to the sha and the
 // public, immutable record, not a second principal. Therefore it does not
 // carry G10, INJECTION or evidenced severe rights findings (secondReviewStops).
-export const SECOND_REVIEW_REPOSITORY = "JSchmid6/wireguard-ops-cockpit";
+// The repository is bound by its numeric GitHub id, not by its name (card
+// t_05754d79, rename wireguard-ops-cockpit → hostdoor): the id never changes,
+// /repositories/<id>/... answers before and after a rename without a redirect
+// (githubApiFetch keeps redirect: "error"), and a pull request counts only when
+// its base.repo.id is that id. A name could be given up and taken again by a
+// new repository; the id cannot, so this is narrower than the name was.
+export const SECOND_REVIEW_REPOSITORY_ID = 1214926797;
+export const SECOND_REVIEW_REPOSITORY_PATH = `/repositories/${SECOND_REVIEW_REPOSITORY_ID}`;
 export const SECOND_REVIEW_MARKER = /^Cockpit-Zweitpruefung: FREIGABE ([a-f0-9]{40}) opus[ \t]*$/m;
 const SECOND_REVIEW_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -1058,7 +1065,7 @@ function parentShas(commit: unknown): unknown[] {
 // request into main whose head carries the second-review marker and whose
 // tree it has. Returns the reason it is not, or the proven pull request.
 async function proveMerge(sha: string, commit: unknown, github: GithubFetch): Promise<ProvenMerge | string> {
-  const repo = `/repos/${SECOND_REVIEW_REPOSITORY}`;
+  const repo = SECOND_REVIEW_REPOSITORY_PATH;
   const parents = parentShas(commit);
   if (parents.length !== 1 && parents.length !== 2) return `${sha.slice(0, 12)} is not the merge commit of one pull request`;
   const parent = parents[0];
@@ -1067,7 +1074,7 @@ async function proveMerge(sha: string, commit: unknown, github: GithubFetch): Pr
   const pr = (Array.isArray(pulls) ? pulls : []).find((item) =>
     typeof field(item, "merged_at") === "string" && field(item, "merge_commit_sha") === sha
     && (parents.length === 1 || field(item, "head", "sha") === parents[1]) && field(item, "base", "ref") === "main"
-    && field(item, "base", "repo", "full_name") === SECOND_REVIEW_REPOSITORY);
+    && field(item, "base", "repo", "id") === SECOND_REVIEW_REPOSITORY_ID);
   const number = field(pr, "number");
   if (typeof number !== "number" || !Number.isInteger(number)) return `no merged pull request into main has ${sha.slice(0, 12)} as its merge commit`;
   const head = field(pr, "head", "sha");
@@ -1093,7 +1100,7 @@ export async function verifySecondReview(binding: UpdateBinding, github: GithubF
   const { sha, base } = binding;
   const no = (reason: string): SecondReviewCheck => ({ sha, verified: false, reason });
   if (!SHA.test(sha) || !SHA.test(base)) return no("malformed sha");
-  const repo = `/repos/${SECOND_REVIEW_REPOSITORY}`;
+  const repo = SECOND_REVIEW_REPOSITORY_PATH;
   try {
     const proven: ProvenMerge[] = [];
     let current = sha;
