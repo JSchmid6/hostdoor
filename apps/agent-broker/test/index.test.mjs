@@ -92,15 +92,6 @@ test("agent broker creates a private role-scoped workspace and removes only that
   fs.rmSync(root, { recursive: true });
 });
 
-test("the safety role reviews defensively: effect, no exploit, no payload (card t_dd0a41cd)", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-test-"));
-  const workspace = createSessionWorkspace({ requestId: "12345678", role: "safety", prompt: "x" }, root);
-  const instructions = fs.readFileSync(path.join(workspace, "AGENTS.md"), "utf8");
-  assert.match(instructions, /Safety role/);
-  assert.match(instructions, /never explains how to exploit, extend or evade it, and never reproduces a harmful payload/);
-  fs.rmSync(root, { recursive: true });
-});
-
 test("startup cleanup removes stale bounded workspaces but preserves unrelated directories", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-agent-stale-"));
   const stale = path.join(root, "agent-stale-planner-test");

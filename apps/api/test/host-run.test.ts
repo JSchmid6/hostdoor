@@ -567,6 +567,13 @@ describe("doorkeeper X2 judged by effect", () => {
     // Encoded content stays a finding (X5) without being decoded or reproduced; the quote may leave the payload out.
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("is code hidden from review: flag it as X5 at its line. Do not decode, run or reproduce it");
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("if the line holds a secret or encoded content, quote an unshortened part of it that leaves the secret or the encoded payload out, and put nothing else on the CODE line");
+    // Only the writing is limited, not the judgement: renewal and chains stay X2 (G9 does not narrow).
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("This limits only how you write PATH, not what you judge: a run that renews, re-arms or chains a window is still an X2 finding");
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("A hash or digest the run only compares or pins is not such content.");
+    // The defensive framing sits in the doorkeeper's own instructions, not in the shared safety role
+    // (the pre-install review still names the concrete way past a guard, second review R1 of t_dd0a41cd).
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("You review defensively for the operator who owns this host");
+    expect(UPDATE_REVIEW_INSTRUCTIONS).not.toContain("You review defensively");
     // Evidence is unchanged: a finding still needs WHERE, CODE and PATH.
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("A finding needs evidence, or it is discarded:");
   });

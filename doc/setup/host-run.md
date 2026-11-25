@@ -129,11 +129,14 @@ die Nutzlast selbst dekodiert und zitiert hatte. Die Länge war es nicht (ungest
 als die Schnittstellen). Seitdem verlangt die Anleitung im PATH-Feld nur die direkte Wirkung in höchstens
 zwei Sätzen (bei X2 die verletzte Bedingung (a)–(d)), kein Rezept, kein Szenario von Folgeläufen;
 kodierter Inhalt ist ohne Dekodieren ein X5-Befund, das Zitat lässt die Nutzlast weg (Teilzitat wie bei
-Geheimnissen); die Sicherheitsrolle prüft ausdrücklich defensiv (`apps/agent-broker/context/safety.md`).
+Geheimnissen; Prüfsummen, die der Lauf nur vergleicht, zählen nicht); der Türsteher prüft ausdrücklich defensiv. Die
+Grenze gilt nur fürs Schreiben: Erneuern oder Verketten eines Fensters bleibt X2 („(c) fails“). Bewusst nur in
+der Türsteher-Anleitung, nicht in der gemeinsamen Rolle `safety.md`: die Pre-Install-Prüfung soll den konkreten
+Weg am Schutz vorbei weiter benennen (Zweitprüfung R1).
 Material, Klassen und Belegpflicht sind unverändert: Der Türsteher sieht jede Zeile wörtlich, ein Befund
 braucht weiter WHERE, CODE und PATH. Messung mit `test/host-run-review-live.mjs`, 3 Rollen × 17 Fälle,
-Rohdaten `/opt/data/out/t_dd0a41cd/`: vorher 11 von 45 MUSS-Läufen gestoppt (14 Stopps), nachher 4 und 5
-von 45 (4 und 7 Stopps) in zwei Läufen, jeweils 51 von 51 wie erwartet (DARF 6/6 pass). Ehrliche Grenze:
+Rohdaten `/opt/data/out/t_dd0a41cd/`: vorher 11 von 45 MUSS-Läufen gestoppt (14 Stopps), mit dieser Fassung
+4 von 45 (4 Stopps; zwei Läufe einer Vorfassung: 4 und 5), jeweils 51 von 51 wie erwartet (DARF 6/6 pass). Ehrliche Grenze:
 Der Fall „Ziel eines Drop-ins als Prüfer-Attrappe anlegen“ stoppt weiter meist, teils schon vor dem
 ersten Wort; dort greift der Filter am Material selbst, das der Türsteher wörtlich sehen muss. Dafür
 bleibt das Netz oben (STOPPED → Jochen).
