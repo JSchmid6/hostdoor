@@ -560,6 +560,17 @@ describe("doorkeeper X2 judged by effect", () => {
     expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("code is hidden from review (downloaded and executed, base64, eval");
   });
 
+  it("asks for a short, non-operative finding so Claude's safety classifier does not cut the review (card t_dd0a41cd)", () => {
+    // The effect, not a recipe: the stopped answers of t_9f370d63 broke off in attack narratives.
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("State the direct effect of this plan, never how it could be used: no attack steps, no follow-on commands");
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("for X2 name the condition (a)-(d) that fails");
+    // Encoded content stays a finding (X5) without being decoded or reproduced; the quote may leave the payload out.
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("is code hidden from review: flag it as X5 at its line. Do not decode, run or reproduce it");
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("if the line holds a secret or encoded content, quote an unshortened part of it that leaves the secret or the encoded payload out, and put nothing else on the CODE line");
+    // Evidence is unchanged: a finding still needs WHERE, CODE and PATH.
+    expect(HOST_RUN_REVIEW_INSTRUCTIONS).toContain("A finding needs evidence, or it is discarded:");
+  });
+
   it("the pre-install review treats widening the X2 exception as narrowing G9", () => {
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Authority (X2) is judged by effect");
     expect(UPDATE_REVIEW_INSTRUCTIONS).toContain("Narrowing these classes (also loosening any of (a)-(d), dropping the time bound of the self-revert or the rule that renewing an open window is a finding");
