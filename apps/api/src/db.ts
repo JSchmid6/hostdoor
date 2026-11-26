@@ -26,6 +26,39 @@ import { createAuthToken, hashPassword, hashAuthToken, verifyPassword } from "./
 
 type SqliteValue = string | number | null;
 
+export interface TelegramOffer {
+  id: string;
+  jobId: string;
+  nonceHash: string;
+  binding: string;
+  chatId: string;
+  messageId: number;
+  textHash: string;
+  createdAt: string;
+  expiresAt: string;
+  usedAt: string | null;
+}
+
+interface TelegramOfferRow {
+  id: string;
+  job_id: string;
+  nonce_hash: string;
+  binding: string;
+  chat_id: string;
+  message_id: number;
+  text_hash: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+}
+
+function mapTelegramOffer(row: TelegramOfferRow): TelegramOffer {
+  return {
+    id: row.id, jobId: row.job_id, nonceHash: row.nonce_hash, binding: row.binding, chatId: row.chat_id,
+    messageId: row.message_id, textHash: row.text_hash, createdAt: row.created_at, expiresAt: row.expires_at, usedAt: row.used_at,
+  };
+}
+
 interface SessionRow {
   id: string;
   name: string;
@@ -309,6 +342,22 @@ export class CockpitDatabase {
         FOREIGN KEY (actor_id) REFERENCES users(id)
       );
 
+      -- Jochens Ja per Telegram (card t_1e9bc441, telegram-approval.ts): one
+      -- offer per job, the nonce only as its hash, single use.
+      CREATE TABLE IF NOT EXISTS telegram_offers (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE,
+        nonce_hash TEXT NOT NULL UNIQUE,
+        binding TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        text_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        FOREIGN KEY (job_id) REFERENCES jobs(id)
+      );
+
       CREATE TABLE IF NOT EXISTS scheduled_runbooks (
         id TEXT PRIMARY KEY,
         owner_id TEXT NOT NULL,
@@ -392,6 +441,14 @@ export class CockpitDatabase {
       .run(id, username, hashPassword(password), role, now());
 
     return { id, username, role };
+  }
+
+  getUserByUsername(username: string): UserSummary | null {
+    const row = this.database
+      .prepare("SELECT id, username, role FROM users WHERE username = ?")
+      .get(username) as UserSummary | undefined;
+
+    return row || null;
   }
 
   getUserById(userId: string): UserSummary | null {
@@ -1170,6 +1227,29 @@ export class CockpitDatabase {
   getAudit(id: string): AuditRecord | null {
     const row = this.database.prepare("SELECT * FROM audits WHERE id = ?").get(id) as AuditRow | undefined;
     return row ? this.mapAudit(row) : null;
+  }
+
+  createTelegramOffer(input: Omit<TelegramOffer, "id" | "createdAt" | "usedAt">): TelegramOffer {
+    const offer: TelegramOffer = { id: randomUUID(), ...input, createdAt: now(), usedAt: null };
+    this.database
+      .prepare("INSERT INTO telegram_offers (id, job_id, nonce_hash, binding, chat_id, message_id, text_hash, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
+      .run(offer.id, offer.jobId, offer.nonceHash, offer.binding, offer.chatId, offer.messageId, offer.textHash, offer.createdAt, offer.expiresAt);
+    return offer;
+  }
+
+  getTelegramOfferForJob(jobId: string): TelegramOffer | null {
+    const row = this.database.prepare("SELECT * FROM telegram_offers WHERE job_id = ?").get(jobId) as TelegramOfferRow | undefined;
+    return row ? mapTelegramOffer(row) : null;
+  }
+
+  getTelegramOfferByNonceHash(nonceHash: string): TelegramOffer | null {
+    const row = this.database.prepare("SELECT * FROM telegram_offers WHERE nonce_hash = ?").get(nonceHash) as TelegramOfferRow | undefined;
+    return row ? mapTelegramOffer(row) : null;
+  }
+
+  // Single use: only the first caller gets true (replay of the same tap fails).
+  useTelegramOffer(id: string): boolean {
+    return this.database.prepare("UPDATE telegram_offers SET used_at = ? WHERE id = ? AND used_at IS NULL").run(now(), id).changes === 1;
   }
 
   close(): void {

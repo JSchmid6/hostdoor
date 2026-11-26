@@ -184,7 +184,8 @@ CLI), gilt 0, also das alte Verhalten.
 - Sicherheitsarbeit wird nie wegen des Abo-Limits geparkt: Ist das Fenster voll, prüft DeepSeek als
   NOTBETRIEB, statt dass der Job wartet. Eine Zeitüberschreitung des Türstehers ist dagegen „review
   incomplete“: Es läuft nichts.
-- Das Cockpit hat keinen Telegram-Weg (AGENTS.md, „Wartet auf dich“): Hermes liest das Feld beim
+- Das Cockpit hat keinen Telegram-Weg für Meldungen (AGENTS.md, „Wartet auf dich“; der eigene Bot der
+  Box bietet nur Klasse-A-Freigaben an, `telegram-freigabe.md`): Hermes liest das Feld beim
   Job-Ergebnis (Plugin cockpit) und meldet es Jochen.
 
 ## Einrichten

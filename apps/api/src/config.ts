@@ -48,6 +48,17 @@ export interface AppConfig {
   forgejoToken?: string | null;
   forgejoCaFile?: string | null;
   packageOwners?: string[];
+  // Jochens Ja per Telegram für Klasse A (card t_1e9bc441,
+  // doc/setup/telegram-freigabe.md): the Cockpit's own bot (token from
+  // telegram.env, root-owned, read by the API unit as an optional
+  // EnvironmentFile; the agents never see it) and the operator's Telegram user
+  // id. Off unless switched on and complete; the Cockpit click always stays.
+  telegramApproval?: TelegramApprovalSettings | null;
+}
+
+export interface TelegramApprovalSettings {
+  token: string;
+  operatorId: string;
 }
 
 // A breaker limit from the environment: a positive whole number, else the
@@ -106,8 +117,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     forgejoUrl: env.COCKPIT_FORGEJO_URL?.trim() || null,
     forgejoToken: env.COCKPIT_FORGEJO_TOKEN?.trim() || null,
     forgejoCaFile: env.COCKPIT_FORGEJO_CA?.trim() || null,
-    packageOwners: (env.COCKPIT_PACKAGE_OWNERS || "").split(",").map((owner) => owner.trim()).filter(Boolean)
+    packageOwners: (env.COCKPIT_PACKAGE_OWNERS || "").split(",").map((owner) => owner.trim()).filter(Boolean),
+    telegramApproval: telegramApprovalOf(env)
   };
+}
+
+// Fail closed: only the explicit switch "on", a token of the Bot API's form and
+// a numeric user id switch it on; anything missing or malformed leaves only the
+// Cockpit click.
+function telegramApprovalOf(env: NodeJS.ProcessEnv): TelegramApprovalSettings | null {
+  const token = env.COCKPIT_TELEGRAM_BOT_TOKEN?.trim() || "";
+  const operatorId = env.COCKPIT_TELEGRAM_OPERATOR_ID?.trim() || "";
+  if (env.COCKPIT_TELEGRAM_APPROVAL?.trim() !== "on") return null;
+  if (!/^\d{5,16}:[A-Za-z0-9_-]{30,64}$/.test(token) || !/^\d{5,16}$/.test(operatorId)) return null;
+  return { token, operatorId };
 }
 
 // Nur die drei bekannten Rollen; alles andere ist keine Rolle (strengster Text).
