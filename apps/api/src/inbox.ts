@@ -6,6 +6,7 @@
 // POST /api/approvals/:id/decision, POST /api/borg/retention/resume); die
 // Karten ändern an Schloss und Türsteher nichts.
 import type { ApprovalRecord, JobRecord } from "@wireguard-ops-cockpit/domain";
+import { validDecisionCard, type DecisionCard } from "./decision-card.js";
 
 export type InboxKind = "hermes-change" | "approval" | "retention-anomaly";
 
@@ -40,6 +41,10 @@ export interface InboxCard {
   // freigeben (POST /api/hermes/jobs/:id/approval erneuert den Envelope mit
   // demselben Inhalt), solange der Job jünger als 72 h ist (13.11.2026).
   approvableAfterExpiry?: boolean;
+  // Nur hermes-change: die Entscheidungskarte des Erklärers in Klartext
+  // (decision-card.ts), wenn sie zum Prüfstand des Jobs passt. Fehlt sie, zeigt
+  // die Startseite die bisherige Ansicht. `warum` folgt `findings` Satz für Satz.
+  decision?: DecisionCard;
   // Direktlink auf die Karte (Hash-Anker der Startseite).
   link: string;
   jobId?: string;
@@ -106,7 +111,7 @@ function fullIntent(text: string, title: string): { intent?: string } {
   return flat && flat.replace(/\s+/g, " ") !== title ? { intent: clip(flat, 4000) } : {};
 }
 
-export function hermesJobCard(job: JobRecord, now: number, webUrl: string | null, renewHours = 72): InboxCard {
+export function hermesJobCard(job: JobRecord, now: number, webUrl: string | null, renewHours = 72, decisionCards = true): InboxCard {
   const output = record(job.output);
   const explanation = record(output.explanation);
   const policy = record(output.policy);
@@ -120,6 +125,7 @@ export function hermesJobCard(job: JobRecord, now: number, webUrl: string | null
   const title = oneSentence(str(explanation.intent) || "Änderung von James");
   // Ohne Envelope gibt es nichts freizugeben: die Karte gilt als abgelaufen.
   const expired = expiresAt ? isExpired(expiresAt, now) : true;
+  const decision = decisionCards ? validDecisionCard(output) : null;
   return {
     id,
     kind: "hermes-change",
@@ -132,6 +138,7 @@ export function hermesJobCard(job: JobRecord, now: number, webUrl: string | null
     expired,
     ...(expired && str(envelope.expiresAt) && envelope.operatorApproved !== true && now < Date.parse(job.createdAt) + renewHours * 3_600_000
       ? { approvableAfterExpiry: true } : {}),
+    ...(decision ? { decision } : {}),
     link: cardLink(id, webUrl),
     jobId: job.id,
   };

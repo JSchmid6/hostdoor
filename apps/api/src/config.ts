@@ -40,6 +40,10 @@ export interface AppConfig {
   // der API-Unit als optionales EnvironmentFile gelesen). Sagt dem Türsteher,
   // auf welchem Host er steht; fehlt sie, gilt der strengste Text (VPS).
   instanceRole?: "vps" | "lab0" | "box" | null;
+  // Entscheidungskarte in "Wartet auf dich" (decision-card.ts, Karte t_b73103ef):
+  // COCKPIT_DECISION_CARD=off schaltet Erklärer und Karte ab, die Startseite zeigt
+  // dann die bisherige Ansicht (der Rückweg ohne neuen Build).
+  decisionCards?: boolean;
   // Package source of the host door (card t_d7d34cf5, doc/setup/host-run.md 2c):
   // the operator's Forgejo, read with a read-only token from forgejo.env (root-
   // owned, read by the API unit as an optional EnvironmentFile). Without URL and
@@ -103,6 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv,
     webUrl: env.COCKPIT_WEB_URL?.trim() || null,
     instanceRole: instanceRoleOf(env.COCKPIT_INSTANCE_ROLE),
+    decisionCards: (env.COCKPIT_DECISION_CARD || "on").trim().toLowerCase() !== "off",
     forgejoUrl: env.COCKPIT_FORGEJO_URL?.trim() || null,
     forgejoToken: env.COCKPIT_FORGEJO_TOKEN?.trim() || null,
     forgejoCaFile: env.COCKPIT_FORGEJO_CA?.trim() || null,

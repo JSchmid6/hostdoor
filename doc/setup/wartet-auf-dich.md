@@ -1,6 +1,6 @@
 # Wartet auf dich — die Startseite des Cockpits
 
-Stand 12.10.2026 (t_432807ea, verschlankt mit t_74f5f6e1). Gilt für das VPS- und das
+Stand 26.11.2026 (t_432807ea, verschlankt mit t_74f5f6e1, Entscheidungskarte t_b73103ef). Gilt für das VPS- und das
 Lab0-Cockpit (gleicher Code).
 
 Nach dem Login zeigt das Cockpit nur eine Liste: Jochens Aufgaben, also alles, was er entscheiden
@@ -44,6 +44,83 @@ ihn). Der Dialog zeigt alles, was vorher direkt auf der Karte stand, und mehr:
 
 Nichts offen: groß **„Nichts wartet auf dich"**, darunter eine Zeile mit dem letzten Lauf, dem Alter
 des letzten Backups (aus `borg.status`, ohne neue Messung zu erzwingen) und dem freien Platz auf `/`.
+
+## Entscheidungskarte (seit 26.11.2026, Karte t_b73103ef)
+
+**Warum.** Jochen (26.11.2026): Die Jobbeschreibungen sind „sehr ausschweifend“, er kann sie kaum
+bewerten. Ist-Zustand davor, gemessen an den echten Jobs 632345dd (VPS), b48b0e25 (Lab0), 30c82d1a
+und c3d239b5 (box): Der Titel der Karte war der erste Satz der englischen Absicht des Auftraggebers
+(„Switch the git origin of the cockpit checkout …“ bzw. „Zielzustand auf dem Box-Host (Proxmox), Karte
+t_46caf5c5, Spec …“). Der Dialog zeigte die ganze Absicht samt JSON-Manifest (2676 bis 3136 Zeichen),
+den Grund des Stopps auf Englisch mit Codes („S2:L3 …; S3:L5 …“) und die Befunde mit Klasse, Zeile und
+englischer Begründung. Die Knöpfe standen unter all dem.
+
+**Was jetzt oben steht.** Bei einem `hermes-change`-Job in `blocked_user_approval` steht oben im Dialog
+die Entscheidungskarte auf Deutsch. Sie hat je Feld eine Zeile, die Schwere jedes Befunds kommt aus
+den Daten des Prüfers, nicht vom Erklärer:
+
+| Zeile | Inhalt | höchstens |
+|---|---|---|
+| Was · Wo | was passiert, ein Satz Alltagssprache · Host oder Netz | 120 · 60 Zeichen |
+| Warum du gefragt wirst | **je belegtem Befund ein Satz**, in dessen Reihenfolge, dahinter die Schwere aus den Daten des Prüfers (schwer/mittel); ohne Befund (Risiko-Riegel, Plan-Policy) ein Satz aus dem Grund des Stopps | 120 je Satz |
+| Schlimmstenfalls | der schlimmste realistische Effekt, wenn die Schritte laufen | 120 |
+| Rückweg | ein Satz | 110 |
+| Empfehlung | Freigeben, Ablehnen oder Einengen, mit Grund | 140 |
+
+Direkt darunter stehen das Grund-Feld (eine Zeile) und die beiden Knöpfe nebeneinander, auch auf dem
+Handy. Diese Leiste klebt am unteren Rand des Dialogs (`position: sticky`), so bleibt der Knopf auch bei
+vielen Befunden ohne Scrollen sichtbar. Gemessen in Chromium (Headless-Shell 1148) mit den echten
+Erklärer-Antworten zu den Jobs 632345dd (drei Befunde) und c3d239b5 (zwei Befunde): Bei 360 × 740 px
+endet die Karte bei 560 bzw. 538 px, die Knöpfe bei 709 bzw. 687 px, ohne Scrollen und ohne seitlichen
+Überlauf (Seitenbreite 360 px). Ein Stressfall mit sechs Befunden zu je 120 Zeichen hält die Knöpfe bei
+724 px, die Karte scrollt darüber. Bei 1280 × 800 px steht der Dialog 768 px breit in der Mitte. Die
+erste Messung mit 180 Zeichen je Zeile lag bei 902 px, deshalb sind die Grenzen jetzt kürzer. Ein Blick
+auf dem echten Handy bleibt sinnvoll. Alles Weitere (Absicht im Wortlaut, ganze Absicht, Grund des Stopps, Befunde mit Codes und
+zitierter Zeile, Zeiten, Kennung) steht eingeklappt unter „Alles Weitere“. Auf der Startseite trägt die
+Karte den Satz „Was“ statt des ersten Satzes der Absicht.
+
+**Wer sie schreibt.** Ein eigener Erklärer, keine Textbausteine: `apps/api/src/decision-card.ts`
+(System-Prompt `DECISION_CARD_INSTRUCTIONS` mit drei Beispielen; die Schwere schreibt er nicht selbst, die Karte setzt sie aus den Daten) über dieselbe abgeschottete
+Prüfrolle `safety` des Agent-Brokers (Claude Opus). Er liest den gespeicherten Job: Rolle der Instanz,
+erklärte Wirkung und Risiko des Manifests, den Grund des Stopps, die belegten Befunde, die Absicht und
+den geprüften Plan. Der Text des Auftraggebers geht nur als Daten hinein, jede Zeile hinter „| “ und
+zwischen Markern mit Nonce. Er läuft im Hintergrund, sobald ein Job in `blocked_user_approval` endet,
+und für Jobs, die schon ohne Karte warten, beim nächsten `GET /api/inbox`. Höchstens drei Versuche je
+Job, zehn Minuten auseinander. Die Antwort des Jobs und `operatorLink` warten nicht auf ihn. Er kostet
+einen Opus-Aufruf je Job, der auf Jochen wartet.
+
+**Warum nicht der Türsteher selbst.** Der Türsteher (`host-run.ts`) und der Update-Prüfer bleiben
+unverändert. Ein zusätzliches Antwortfeld in ihrem Prompt hätte ihre Prüfung ablenken können, und
+ihre Antwortformate sind Teil der Tür (G-Garantien). Der Erklärer entscheidet nichts. Er ändert
+weder Status noch Plan, Prüfung, Policy oder Envelope, sondern schreibt nur `output.decisionCard`.
+Seinen Motor hält er auf der Karte (`decisionCard.engine`), nicht in `agentEngine`: Ein Rückfall bei
+der Lesehilfe ist kein NOTBETRIEB des Jobs und darf im Verlauf, den der Türsteher liest, nicht als
+einer erscheinen.
+
+**Was der Code erzwingt (nicht der Prompt).**
+
+- **Befunde werden nur umformuliert, nie gefiltert.** Die Antwort muss genau einen Satz W1..Wn je
+  belegtem Befund tragen. Fehlt einer, kommt einer dazu oder steht einer doppelt, ist sie ungültig.
+  Felder fehlen, Längen werden überschritten, ein Prüfcode (X1-X6, S2:L3, G1) steht oben, oder die
+  Empfehlung beginnt nicht mit Freigeben/Ablehnen/Einengen samt Grund: auch dann ist sie ungültig
+  (`parseDecisionCard`, Audit `hermes.decision_card.invalid`).
+- **Gebunden an den Prüfstand.** `decisionCard.basis` ist der Hash über Befunde und Grund des Stopps.
+  Beim Anzeigen prüft `validDecisionCard` Hash, Satzzahl und Schema erneut. Passt etwas nicht, fällt
+  die Karte weg.
+- **Fail closed zum Altverhalten.** Ohne gültige Karte (Erklärer läuft noch, scheiterte, Antwort
+  ungültig, kein Agent-Broker) zeigt der Dialog genau die bisherige Ansicht. Die Befunde im Wortlaut
+  bleiben in beiden Ansichten vollständig auf der Karte (`findings`).
+- **Rückweg:** `COCKPIT_DECISION_CARD=off` in der Umgebung der API schaltet Erklärer und Karte ab.
+  Nach einem Neustart der API zeigt die Startseite wieder die bisherige Ansicht, ohne neuen Build.
+
+**Ehrliche Grenze.** Der Erklärer liest die Absicht des Auftraggebers mit. Eine manipulierte Absicht
+kann Was oder Empfehlung färben. Sie kann aber keinen Befund verschwinden lassen und seine Schwere
+nicht ändern (beides prüft der Code), und jeder Befund steht einen Tipp tiefer im Wortlaut. Die
+Empfehlung ist Lesehilfe. Entscheiden tut Jochen, und das Schloss prüft wie vorher den Envelope.
+
+**James' Seite:** `plugins/cockpit/warten.py` (Repo hermes-plugin-cockpit) gibt je Job eine Kurzzeile
+aus. Bei `blocked_user_approval` nimmt sie den Grund aus `output.decisionCard`, die JSON-Zusammenfassung
+kommt nur mit `--json`.
 
 ## Abgelaufene Frist: trotzdem freigeben (bis 72 h)
 
@@ -207,7 +284,7 @@ einen Plan entscheidet weiter nur Jochen über die Freigabe-Route.
 
 | Route | Wer | Was |
 |---|---|---|
-| `GET /api/inbox` | Sitzung; Automation nur mit Scope | `cards`, `status` (`lastRuns`, `backup`, `disk`), `reorders`, `attention`, `reviewFindings`, `generatedAt` |
+| `GET /api/inbox` | Sitzung; Automation nur mit Scope | `cards` (je `hermes-change`-Karte mit gültiger Entscheidungskarte zusätzlich `decision`), `status` (`lastRuns`, `backup`, `disk`), `reorders`, `attention`, `reviewFindings`, `generatedAt` |
 | `POST /api/hermes/jobs/:jobId/reactivate` | James' Token mit Scope, oder Sitzung | abgelaufenen, nie entschiedenen Job mit neuer Frist versehen (keine Freigabe; max. 3×, max. 72 h) |
 | `POST /api/hermes/jobs/:jobId/withdraw` | James' Token mit Scope (nur Automation) | eigenen Job zurückziehen, solange auf dem Host nichts lief; Body `{ reason }` (Pflicht); Status `withdrawn` |
 | `POST /api/inbox/jobs/:jobId/reorder` | Sitzung (nicht Automation) | abgelaufenen Job schließen, Neubestellung anmelden; Body `{ note? }` |
@@ -218,6 +295,13 @@ einen Plan entscheidet weiter nur Jochen über die Freigabe-Route.
 - `apps/api/test/inbox.test.ts` — Karten aus Job, Freigabe und Anomalie; Befunde (nur belegte);
   Frist und Sortierung; Sichtbarkeit je Rolle; `operatorLink`; Neubestellen nur abgelaufen und
   nicht per Token; Pflichtgrund.
+- `apps/api/test/decision-card.test.ts` — Auftrag an den Erklärer mit jedem belegten Befund in
+  Reihenfolge (unbelegte nicht), Text des Auftraggebers nur als Daten; Schema: fehlender, zusätzlicher
+  oder doppelter Befund-Satz, fehlendes Feld, Überlänge, Prüfcode, Empfehlung ohne Grund → ungültig;
+  veraltete Karte (Befunde geändert) oder falsche Satzzahl → bisherige Ansicht; Befunde bleiben auf der
+  Karte; im App-Lauf: Karte im Hintergrund, Status/Prüfung/Envelope/`agentEngine` unberührt, ungültige
+  Antwort → Audit und bisherige Ansicht, entschiedener Job bekommt keine Karte mehr, Schalter `off`
+  ruft keinen Erklärer.
 - `apps/api/test/reactivate.test.ts` — Reaktivieren nur abgelaufen und unentschieden, gleicher
   Envelope-Inhalt, nie `operatorApproved`, Obergrenzen (Anzahl, 72 h), Drift stoppt, keine
   Selbstfreigabe per Token.
@@ -234,5 +318,9 @@ einen Plan entscheidet weiter nur Jochen über die Freigabe-Route.
   bildschirmfüllend) und die Lesereihenfolge im Dialog. jsdom rechnet kein Layout; gemessen wurde
   zusätzlich in Chromium bei 360 × 740 px (kein Element breiter als der Bildschirm, Knöpfe 52 px,
   ✕ 45 px) und 1280 px (Dialog 768 px mittig). Ein Blick auf dem echten Handy bleibt sinnvoll.
+- `apps/web/src/Inbox.test.tsx`, Block „Entscheidungskarte“: Startseite mit dem Satz „Was“, im Dialog
+  Was/Wo, je Befund ein Satz mit Schwere, Schlimmstenfalls, Rückweg, Empfehlung, keine Codes oben,
+  dann Grund-Feld und Knöpfe, „Alles Weitere“ eingeklappt mit allen Befunden im Wortlaut und der
+  Kennung; ohne Karte die bisherige Ansicht; Entscheidungsleiste klebend, Knöpfe nebeneinander (CSS-Regeln).
 - `apps/web/src/App.test.tsx` — Startseite zeigt „Wartet auf dich", der Rest ist hinter „Mehr"
   zu; Freigaben laufen über den Dialog der Karte mit Grund.

@@ -336,6 +336,74 @@ describe("Wartet auf dich", () => {
   });
 });
 
+const decision = {
+  was: "Die Werkstatt-VM 140 wird über WireGuard aus dem Container erreichbar.",
+  wo: "box (Proxmox-Host)",
+  warum: ["Der Browser-Dienst auf VM 140 wird neu aus dem WireGuard-Netz erreichbar.", "Auch die Bildschirm-Fernsteuerung der VM wird erreichbar."],
+  schlimmsterFall: "Wer im WireGuard-Netz ist, kann den Browser der VM bedienen.",
+  rueckweg: "Die Regeln werden entfernt; box hat vorher einen Snapshot.",
+  empfehlung: { aktion: "Freigeben" as const, grund: "bleibt im internen Netz." },
+};
+
+function decisionCard(): InboxCard {
+  return hermesCard({
+    title: "Zielzustand auf dem Box-Host (Proxmox), Karte t_46caf5c5, Spec … Entscheidung 5 und 12.",
+    reason: "The doorkeeper found 2 evidenced finding(s): S2:L10 New WireGuard path; S2:L12 New path to port 6080.",
+    findings: [
+      { source: "doorkeeper", title: "New WireGuard path to the agent-browser service on VM 140", guarantee: "X3", location: "S2:L10", severity: "medium", detail: "VM 140 becomes reachable." },
+      { source: "doorkeeper", title: "New WireGuard path to VM 140's remote-desktop port (6080)", guarantee: "X3", location: "S2:L12", severity: "high", detail: "The desktop becomes reachable." },
+    ],
+    decision,
+  });
+}
+
+describe("Entscheidungskarte", () => {
+  it("shows the plain sentence on the start page instead of the requester's first sentence", async () => {
+    serve([decisionCard()]);
+    render(<Inbox />);
+    expect(await screen.findByText(decision.was)).toBeTruthy();
+    expect(screen.queryByText(/Zielzustand auf dem Box-Host/)).toBeNull();
+  });
+
+  it("puts what, where, why per finding, worst case, way back and recommendation on top, the buttons right below, the rest collapsed", async () => {
+    const fetchMock = serve([decisionCard()]);
+    const user = userEvent.setup();
+    render(<Inbox />);
+    const dialog = await openDetails(user);
+    const block = screen.getByTestId("decision-card");
+    expect(block.textContent).toContain(`Was: ${decision.was} · box (Proxmox-Host)`);
+    const why = Array.from(block.querySelectorAll("li")).map((item) => item.textContent);
+    expect(why).toEqual([`${decision.warum[0]} (mittel)`, `${decision.warum[1]} (schwer)`]);
+    expect(block.textContent).toContain(`Schlimmstenfalls: ${decision.schlimmsterFall}`);
+    expect(block.textContent).toContain(`Rückweg: ${decision.rueckweg}`);
+    expect(block.textContent).toContain("Empfehlung: Freigeben — bleibt im internen Netz.");
+    // Keine Codes oben; die Befunde im Wortlaut stehen vollständig eingeklappt darunter.
+    expect(block.textContent).not.toMatch(/S2:L1|X3/);
+    const more = dialog.querySelector("details.inbox-more") as HTMLDetailsElement;
+    expect(more.open).toBe(false);
+    expect(more.textContent).toContain("New WireGuard path to the agent-browser service on VM 140");
+    expect(more.textContent).toContain("New WireGuard path to VM 140's remote-desktop port (6080)");
+    expect(more.textContent).toContain("Zielzustand auf dem Box-Host");
+    expect(more.textContent).toContain("Job j1");
+    // Lesereihenfolge: Karte, Grund-Feld, Knöpfe, dann erst das Eingeklappte.
+    const order = Array.from(dialog.querySelectorAll("[data-testid=decision-card], textarea, .inbox-button, details.inbox-more")).map((element) => element.tagName);
+    expect(order).toEqual(["DIV", "TEXTAREA", "BUTTON", "BUTTON", "DETAILS"]);
+    await user.type(screen.getByLabelText(/Grund \(Pflicht\)/), "passt");
+    await user.click(screen.getByRole("button", { name: "Freigeben" }));
+    await waitFor(() => expect(posted(fetchMock, "/api/hermes/jobs/j1/approval")).toEqual({ decision: "approved", reason: "passt" }));
+  });
+
+  it("keeps the old view for a card without decision", async () => {
+    serve([hermesCard()]);
+    const user = userEvent.setup();
+    render(<Inbox />);
+    const dialog = await openDetails(user);
+    expect(screen.queryByTestId("decision-card")).toBeNull();
+    expect(dialog.querySelector("details.inbox-more")).toBeNull();
+    expect(screen.getByText(/The update reviewer flagged G1\./)).toBeTruthy();
+  });
+});
+
 describe("Handyansicht", () => {
   const css = readFileSync(path.join(__dirname, "styles.css"), "utf8");
   const rule = (selector: string, source = css) => {
@@ -351,6 +419,13 @@ describe("Handyansicht", () => {
     expect(rem(`${wide![1]}rem`)).toBeGreaterThanOrEqual(600);
     expect(wide![2]).toMatch(/grid-template-columns:\s*1fr 1fr;/);
     expect(rule(".inbox-button")).toMatch(/width:\s*100%;/);
+  });
+
+  it("keeps the decision bar under a decision card in view (sticky) with both buttons side by side", () => {
+    expect(rule(".inbox-decide-bar .inbox-actions")).toMatch(/grid-template-columns:\s*1fr 1fr;/);
+    expect(rule(".inbox-decide-bar")).toMatch(/position:\s*sticky;[\s\S]*bottom:/);
+    expect(rule(".inbox-decision")).toContain("overflow-wrap: anywhere");
+    expect(rem(rule(".inbox-more summary").match(/min-height:\s*([\d.]+rem)/)![1])).toBeGreaterThanOrEqual(44);
   });
 
   it("makes the decision buttons and finding rows big enough for a thumb (≥ 44 px)", () => {

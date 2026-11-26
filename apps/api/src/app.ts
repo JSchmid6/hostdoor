@@ -49,6 +49,7 @@ import { runDynamicCapability, runExecutorAction, type ExecutorActionKind } from
 import { borgStatusRequestDigest, createBorgStatusService } from "./borg-status.js";
 import { createRetentionService, decideRetentionChange, readApproval, retentionRequestDigest, retentionTarget } from "./borg-retention.js";
 import { approvalCard, cardLink, hermesJobCard, retentionAnomalyCard, sortCards, type InboxCard } from "./inbox.js";
+import { buildDecisionCardPrompt, parseDecisionCard, validDecisionCard, type DecisionCard } from "./decision-card.js";
 import {
   capabilityManifestHash, capabilityNeedsOperatorApproval, capabilityPlannerContract,
   parseCapabilityManifest, readablePathsNeedingApproval, type CapabilityManifest,
@@ -139,6 +140,9 @@ interface AppOptions {
   // The doorkeeper of the general host door (prompt in, raw answer out).
   // Defaults to the agent broker's safety role; tests inject a stub.
   hostRunReviewRunner?: (prompt: string, jobId?: string) => Promise<string>;
+  // The explainer of the decision card (decision-card.ts): prompt in, raw answer
+  // out. Defaults to the agent broker's safety role; tests inject a stub.
+  decisionCardRunner?: (prompt: string, jobId?: string) => Promise<{ output: string; engine: AgentEngine | null }>;
   // Reads the GitHub API for the second review of a self-update
   // (verifySecondReview). Defaults to api.github.com; tests inject a stub.
   githubFetch?: GithubFetch;
@@ -2223,6 +2227,60 @@ export async function createApp(options: AppOptions = {}) {
     return await runReviewerWithEngine(prompt, jobId, "doorkeeper");
   });
 
+  // The explainer of the decision card (decision-card.ts): the same isolated
+  // safety role, but only a reading aid for the operator. Its engine stays on the
+  // card, not in agentEngine: a fallback there is no NOTBETRIEB of the job and
+  // must not show up as one in the doorkeeper's record of the door.
+  // Without the agent broker there is no explainer, and the old view stays.
+  const brokerSocket = config.agentBrokerSocket;
+  const decisionCardRunner = options.decisionCardRunner
+    || (brokerSocket ? async (prompt: string) => await runBrokerAgentWithEngine(brokerSocket, "safety", prompt) : null);
+  // At most three attempts per job and process, ten minutes apart: until one
+  // succeeds the operator sees the old view.
+  const decisionCardAttempts = new Map<string, { count: number; at: number }>();
+  const decisionCardsEnabled = config.decisionCards !== false && decisionCardRunner !== null;
+
+  // Writes the decision card of a job that waits for the operator. Never
+  // throws, never changes status, plan, review or envelope: it only adds
+  // output.decisionCard, and only while the job still waits and its review
+  // material is the one the card was written for (validDecisionCard checks
+  // the binding again on every read).
+  async function explainForOperator(jobId: string): Promise<void> {
+    const attempt = decisionCardAttempts.get(jobId);
+    if (!decisionCardsEnabled || (attempt && (attempt.count >= 3 || Date.now() - attempt.at < 10 * 60_000))) return;
+    decisionCardAttempts.set(jobId, { count: (attempt?.count ?? 0) + 1, at: Date.now() });
+    try {
+      const job = database.getJob(jobId);
+      if (!job || job.subjectId !== "hermes-change" || job.status !== "blocked_user_approval" || !job.output) return;
+      if (validDecisionCard(job.output)) return;
+      const material = buildDecisionCardPrompt(job.output, config.instanceRole ?? null);
+      const { output, engine } = await decisionCardRunner!(material.prompt, jobId);
+      const parsed = parseDecisionCard(redactSecrets(output), material.expected);
+      // Read again after the await: approvals and withdrawals happen meanwhile.
+      const current = database.getJob(jobId);
+      if (!current || current.status !== "blocked_user_approval" || !current.output) return;
+      if ("problem" in parsed) {
+        database.createAudit({ actorId: null, action: "hermes.decision_card.invalid", targetType: "job", targetId: jobId, details: { problem: parsed.problem.slice(0, 300) } });
+        return;
+      }
+      const card: DecisionCard = {
+        ...parsed.card, basis: material.basis, createdAt: new Date().toISOString(),
+        ...(engine ? { engine: { name: engine.name, model: engine.model, ...(engine.notbetrieb ? { notbetrieb: true as const } : {}) } } : {}),
+      };
+      // The review material changed while the explainer ran: the card is stale.
+      if (!validDecisionCard({ ...current.output, decisionCard: card })) return;
+      database.updateJob(jobId, { status: current.status, output: { ...current.output, decisionCard: card } });
+    } catch (error) {
+      // Runs in the background: nothing may escape (the database can already be
+      // closed when the API shuts down while the explainer still answers).
+      try {
+        database.createAudit({ actorId: null, action: "hermes.decision_card.failed", targetType: "job", targetId: jobId, details: { error: (error instanceof Error ? error.message : "explainer failed").slice(0, 300) } });
+      } catch {
+        // nothing left to record into
+      }
+    }
+  }
+
   // The isolated safety role for the pre-install review and the doorkeeper,
   // with its engine on the job. The passes of one pre-install review are
   // collected (reviewPassEngines) and recorded once, so a later pass on Claude
@@ -2569,7 +2627,9 @@ export async function createApp(options: AppOptions = {}) {
     // recordAgentEngine in die Datenbank; ein Aufrufer, der einen älteren
     // output-Stand mitgibt (Freigabe-Pfad, Weiterverfolgen nach Neustart), darf
     // sie nicht überschreiben, sonst verschwände ein NOTBETRIEB des Verifiers.
-    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    // decisionCard: die Lesehilfe für Jochen; sie gilt nur, solange ihr basis-Hash
+    // zu Befunden und Grund passt (validDecisionCard), wird also nie falsch alt.
+    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue", "decisionCard"].filter((key) => key in previous).map((key) => [key, previous[key]]));
     const engines = Object.fromEntries(["agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
     const { agentEngine: _staleEngine, notbetrieb: _staleNotbetrieb, ...fresh } = extra;
     const output: Record<string, unknown> = { ...carried, ...fresh, ...engines, explanation: detail };
@@ -2871,6 +2931,9 @@ export async function createApp(options: AppOptions = {}) {
           recommendedAction: policy.status === "blocked_user_approval" ? "Ask the operator to approve or narrow the plan." : "Revise the plan as indicated.",
           rollbackAvailable: policy.rollbackAvailable,
         }), { plan: planText, safety: review, policy, capabilities, manifest, hostRun, envelope, provenance, proposalPath, ...reviewRecord });
+        // The decision card for the operator, in the background: the job's
+        // answer (and its operatorLink) does not wait for the explainer.
+        if (policy.status === "blocked_user_approval") void explainForOperator(job.id);
         return;
       }
       if (!shouldExecute) {
@@ -4551,7 +4614,10 @@ Follow these rules:
     const visible = (jobId: string | null) => actor.role === "admin" || (jobId !== null && database.getJobOwnerId(jobId) === actor.id);
     for (const job of database.listJobsByStatus("hermes-change", "blocked_user_approval")) {
       if (!visible(job.id)) continue;
-      cards.push(hermesJobCard(job, now, webUrl, REACTIVATION_MAX_AGE_HOURS));
+      cards.push(hermesJobCard(job, now, webUrl, REACTIVATION_MAX_AGE_HOURS, decisionCardsEnabled));
+      // A job that waits without a card (blocked before this version, or the
+      // process restarted while the explainer ran) gets one in the background.
+      if (decisionCardsEnabled && !cards[cards.length - 1].decision) void explainForOperator(job.id);
     }
     for (const approval of database.listApprovalsForActor(actor.id, "pending")) {
       cards.push(approvalCard(approval, database.getJob(approval.jobId), config.approvalTtlMinutes, now, webUrl));
