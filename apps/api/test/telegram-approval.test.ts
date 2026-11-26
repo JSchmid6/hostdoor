@@ -245,7 +245,7 @@ describe("telegram approval for class A", () => {
     expect(offer).toHaveLength(1);
     expect(offer[0].chat.id).toBe(Number(OPERATOR));
     expect(offer[0].text).toContain(`Job: ${job.id}`);
-    expect(offer[0].text).toContain("Vorgang: t_46caf5c5");
+    expect(offer[0].text).toContain("Vorgang (Angabe James): t_46caf5c5");
     expect(offer[0].text).toContain("Klasse A: throwaway VM in pool werkstatt");
     expect(offer[0].text).not.toContain(TOKEN);
     expect(flow.telegram.calls.find((call) => call.method === "sendMessage")!.body.parse_mode).toBeUndefined();

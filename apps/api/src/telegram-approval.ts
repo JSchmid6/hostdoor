@@ -159,9 +159,11 @@ export function offerText(job: JobRecord, eligibility: ClassAEligibility, expire
   return [
     "Cockpit box: Freigabe Klasse A",
     `Job: ${job.id}`,
-    `Vorgang: ${clipText(request.operation, 80) || "–"}`,
-    `Absicht: ${clipText(explanation.intent ?? request.intent, 500)}`,
-    `Plan: ${clipText(hostRun.name, 120)} — ${clipText(hostRun.purpose, 400)} (${steps} Schritte, Risiko ${Array.isArray(hostRun.risk) ? hostRun.risk.join(", ") : "?"})`,
+    // Vorgang, Absicht und Plantitel schreiben James bzw. der Planer; die
+    // Kennzeichnung sagt Jochen, welche Zeilen Angabe und welche Urteil sind.
+    `Vorgang (Angabe James): ${clipText(request.operation, 80) || "–"}`,
+    `Absicht (Angabe James): ${clipText(explanation.intent ?? request.intent, 500)}`,
+    `Plan (Angabe Planer): ${clipText(hostRun.name, 120)} — ${clipText(hostRun.purpose, 400)} (${steps} Schritte, Risiko ${Array.isArray(hostRun.risk) ? hostRun.risk.join(", ") : "?"})`,
     `Türsteher: ${clipText(record(output.policy).reason, 600)}`,
     `Klasse A: ${clipText(eligibility.why, 300) || "ja"}`,
     `Prüfsumme: ${(offerBinding(job) ?? "").slice(0, 12)}`,

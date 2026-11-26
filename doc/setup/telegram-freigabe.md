@@ -40,12 +40,16 @@ bestätigt Telegram mit der Nutzer-ID des Kontos. Darum spricht das Cockpit **mi
 direkt mit Jochen:
 
 - Das Cockpit schickt das Angebot selbst und baut den Text aus seinem eigenen Job-Datensatz:
-  Absicht, Plan, Urteil des Türstehers, Begründung für Klasse A, Prüfsumme und Frist. Ein Agent
-  kann nicht beschreiben, was Jochen freigibt.
+  Absicht, Plan, Urteil des Türstehers, Begründung für Klasse A, Prüfsumme und Frist. Vorgang,
+  Absicht und Plantitel stammen von James bzw. dem Planer und sind im Text als „Angabe“
+  gekennzeichnet; Urteil, Klasse und Prüfsumme setzt das Cockpit. Was freigegeben wird, ist
+  immer der geprüfte Plan hinter der Prüfsumme, nicht der Text.
 - Das Cockpit liest den Tipp selbst über `getUpdates`, nur ausgehend und ohne Webhook. Es gibt
   keinen Pfad über James und keine Agentenausgabe.
 - Der Bot-Token liegt in `/etc/wireguard-ops-cockpit/telegram.env` (root 0600). Weder die
-  Agent-Units des Cockpits noch der Hermes-Container sehen ihn.
+  Agent-Units des Cockpits noch der Hermes-Container sehen ihn. Die API nimmt ihn beim Start aus
+  ihrer Prozessumgebung (`apps/api/src/index.ts`), damit Kindprozesse (Türsteher, tmux) ihn
+  nicht erben.
 
 Damit kehrt sich die Entscheidung aus `wartet-auf-dich.md` um, nach der das Cockpit keinen
 Telegram-Token bekommt. Das gilt nur für diesen Zweck und nur auf der Instanz, auf der er eingeschaltet
