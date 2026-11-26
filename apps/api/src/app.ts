@@ -49,7 +49,7 @@ import { runDynamicCapability, runExecutorAction, type ExecutorActionKind } from
 import { borgStatusRequestDigest, createBorgStatusService } from "./borg-status.js";
 import { createRetentionService, decideRetentionChange, readApproval, retentionRequestDigest, retentionTarget } from "./borg-retention.js";
 import { approvalCard, cardLink, hermesJobCard, retentionAnomalyCard, sortCards, type InboxCard } from "./inbox.js";
-import { buildDecisionCardPrompt, parseDecisionCard, validDecisionCard, type DecisionCard } from "./decision-card.js";
+import { buildDecisionCardPrompt, decisionBasis, parseDecisionCard, validDecisionCard, type DecisionCard } from "./decision-card.js";
 import {
   capabilityManifestHash, capabilityNeedsOperatorApproval, capabilityPlannerContract,
   parseCapabilityManifest, readablePathsNeedingApproval, type CapabilityManifest,
@@ -2235,8 +2235,9 @@ export async function createApp(options: AppOptions = {}) {
   const brokerSocket = config.agentBrokerSocket;
   const decisionCardRunner = options.decisionCardRunner
     || (brokerSocket ? async (prompt: string) => await runBrokerAgentWithEngine(brokerSocket, "safety", prompt) : null);
-  // At most three attempts per job and process, ten minutes apart: until one
-  // succeeds the operator sees the old view.
+  // At most three attempts per review state (job + basis) and process, ten
+  // minutes apart: until one succeeds the operator sees the old view. A new
+  // review state (replanning, new findings) gets its own attempts at once.
   const decisionCardAttempts = new Map<string, { count: number; at: number }>();
   const decisionCardsEnabled = config.decisionCards !== false && decisionCardRunner !== null;
 
@@ -2246,13 +2247,15 @@ export async function createApp(options: AppOptions = {}) {
   // material is the one the card was written for (validDecisionCard checks
   // the binding again on every read).
   async function explainForOperator(jobId: string): Promise<void> {
-    const attempt = decisionCardAttempts.get(jobId);
-    if (!decisionCardsEnabled || (attempt && (attempt.count >= 3 || Date.now() - attempt.at < 10 * 60_000))) return;
-    decisionCardAttempts.set(jobId, { count: (attempt?.count ?? 0) + 1, at: Date.now() });
+    if (!decisionCardsEnabled) return;
     try {
       const job = database.getJob(jobId);
       if (!job || job.subjectId !== "hermes-change" || job.status !== "blocked_user_approval" || !job.output) return;
       if (validDecisionCard(job.output)) return;
+      const key = `${jobId}:${decisionBasis(job.output)}`;
+      const attempt = decisionCardAttempts.get(key);
+      if (attempt && (attempt.count >= 3 || Date.now() - attempt.at < 10 * 60_000)) return;
+      decisionCardAttempts.set(key, { count: (attempt?.count ?? 0) + 1, at: Date.now() });
       const material = buildDecisionCardPrompt(job.output, config.instanceRole ?? null);
       const { output, engine } = await decisionCardRunner!(material.prompt, jobId);
       const parsed = parseDecisionCard(redactSecrets(output), material.expected);
@@ -2595,6 +2598,13 @@ export async function createApp(options: AppOptions = {}) {
   // und schickt ihn per Telegram weiter — ohne dass das Cockpit selbst einen
   // Bot-Token braucht.
   function withOperatorLink(job: JobRecord): JobRecord & { operatorLink?: string } {
+    // Nach außen (Job-API, warten.py) nur eine gültige Entscheidungskarte: Passt
+    // sie nicht zum Prüfstand oder wartet der Job nicht mehr, fehlt das Feld.
+    if (job.output && "decisionCard" in job.output
+      && (job.status !== "blocked_user_approval" || !decisionCardsEnabled || !validDecisionCard(job.output))) {
+      const { decisionCard: _stale, ...output } = job.output;
+      job = { ...job, output };
+    }
     return job.subjectId === "hermes-change" && job.status === "blocked_user_approval"
       ? { ...job, operatorLink: cardLink(`job-${job.id}`, config.webUrl ?? null) }
       : job;
@@ -2627,11 +2637,13 @@ export async function createApp(options: AppOptions = {}) {
     // recordAgentEngine in die Datenbank; ein Aufrufer, der einen älteren
     // output-Stand mitgibt (Freigabe-Pfad, Weiterverfolgen nach Neustart), darf
     // sie nicht überschreiben, sonst verschwände ein NOTBETRIEB des Verifiers.
-    // decisionCard: die Lesehilfe für Jochen; sie gilt nur, solange ihr basis-Hash
-    // zu Befunden und Grund passt (validDecisionCard), wird also nie falsch alt.
-    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue", "decisionCard"].filter((key) => key in previous).map((key) => [key, previous[key]]));
+    // decisionCard (die Lesehilfe für Jochen) geht bei jedem Update verloren, auch
+    // aus einem mitgegebenen älteren output-Stand: Sie gehört zu genau einem
+    // Prüfstand, explainForOperator schreibt sie für den neuen Stand neu
+    // (Zweitprüfung t_b73103ef B1: sonst trug eine Neuplanung die alte Karte weiter).
+    const carried = Object.fromEntries(["request", "restarts", "executionStartedAt", "hostRunQueue"].filter((key) => key in previous).map((key) => [key, previous[key]]));
     const engines = Object.fromEntries(["agentEngine", "notbetrieb"].filter((key) => key in previous).map((key) => [key, previous[key]]));
-    const { agentEngine: _staleEngine, notbetrieb: _staleNotbetrieb, ...fresh } = extra;
+    const { agentEngine: _staleEngine, notbetrieb: _staleNotbetrieb, decisionCard: _staleCard, ...fresh } = extra;
     const output: Record<string, unknown> = { ...carried, ...fresh, ...engines, explanation: detail };
     const updated = database.updateJob(jobId, {
       status,

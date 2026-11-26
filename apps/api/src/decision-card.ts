@@ -62,11 +62,13 @@ export function decisionSubject(output: Record<string, unknown>): { findings: In
   return { findings: jobFindings(output), reason: str(policy.reason) || str(explanation.reason) };
 }
 
-/** Der Prüfstand, an den eine Karte gebunden ist. */
+/** Der Prüfstand, an den eine Karte gebunden ist: Befunde, Grund und Plan (eine
+ *  Neuplanung mit gleichem Grund und ohne Befund macht die Karte ebenfalls alt). */
 export function decisionBasis(output: Record<string, unknown>): string {
   const { findings, reason } = decisionSubject(output);
   return hashCanonical({
     reason,
+    plan: str(output.plan),
     findings: findings.map((finding) => ({ source: finding.source, title: finding.title, guarantee: finding.guarantee, location: finding.location, severity: finding.severity })),
   });
 }

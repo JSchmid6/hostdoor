@@ -104,9 +104,13 @@ einer erscheinen.
   Felder fehlen, Längen werden überschritten, ein Prüfcode (X1-X6, S2:L3, G1) steht oben, oder die
   Empfehlung beginnt nicht mit Freigeben/Ablehnen/Einengen samt Grund: auch dann ist sie ungültig
   (`parseDecisionCard`, Audit `hermes.decision_card.invalid`).
-- **Gebunden an den Prüfstand.** `decisionCard.basis` ist der Hash über Befunde und Grund des Stopps.
-  Beim Anzeigen prüft `validDecisionCard` Hash, Satzzahl und Schema erneut. Passt etwas nicht, fällt
-  die Karte weg.
+- **Gebunden an den Prüfstand.** `decisionCard.basis` ist der Hash über Befunde, Grund des Stopps und
+  Plan. Beim Anzeigen prüft `validDecisionCard` Hash, Satzzahl und Schema erneut. Passt etwas nicht,
+  fällt die Karte weg. Jedes Statusupdate des Jobs (`updateHermesJob`) verwirft die Karte, und die
+  Job-API (`GET /api/hermes/jobs/:id`, also auch warten.py) liefert nur eine gültige Karte eines
+  wartenden Jobs aus. Ein neuer Prüfstand (Neuplanung, neuer Befund) bekommt sofort einen eigenen
+  Erklärer-Versuch; die Sperre (3 Versuche, 10 Minuten Abstand) gilt je Job und Prüfstand
+  (Zweitprüfung t_b73103ef, B1).
 - **Fail closed zum Altverhalten.** Ohne gültige Karte (Erklärer läuft noch, scheiterte, Antwort
   ungültig, kein Agent-Broker) zeigt der Dialog genau die bisherige Ansicht. Die Befunde im Wortlaut
   bleiben in beiden Ansichten vollständig auf der Karte (`findings`).
@@ -115,7 +119,9 @@ einer erscheinen.
 
 **Ehrliche Grenze.** Der Erklärer liest die Absicht des Auftraggebers mit. Eine manipulierte Absicht
 kann Was oder Empfehlung färben. Sie kann aber keinen Befund verschwinden lassen und seine Schwere
-nicht ändern (beides prüft der Code), und jeder Befund steht einen Tipp tiefer im Wortlaut. Die
+nicht ändern (beides prüft der Code), und jeder Befund steht einen Tipp tiefer im Wortlaut. Der Code
+prüft nur, dass es je Befund einen Satz gibt, nicht was darin steht: Ein Satz W1 kann einen Befund
+verharmlosen. Die Schwere daneben kommt aus den Prüferdaten, nicht vom Erklärer. Die
 Empfehlung ist Lesehilfe. Entscheiden tut Jochen, und das Schloss prüft wie vorher den Envelope.
 
 **James' Seite:** `plugins/cockpit/warten.py` (Repo hermes-plugin-cockpit) gibt je Job eine Kurzzeile

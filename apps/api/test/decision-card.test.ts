@@ -171,7 +171,8 @@ async function setup(reply: string | (() => Promise<string>), extra: Partial<App
   const login = await app.inject({ method: "POST", url: "/api/auth/login", payload: { username: "admin", password: "test-password" } });
   const inspect = () => { const db = new CockpitDatabase(dbPath); db.initialize(); return db; };
   const inbox = async () => (await app.inject({ method: "GET", url: "/api/inbox", headers: { cookie: login.headers["set-cookie"] as string } })).json();
-  return { app, blocked, inbox, inspect, prompts };
+  const getJob = async (id: string) => (await app.inject({ method: "GET", url: `/api/hermes/jobs/${id}`, headers: { cookie: login.headers["set-cookie"] as string } })).json();
+  return { app, blocked, inbox, inspect, prompts, getJob };
 }
 
 async function settle(check: () => boolean) {
@@ -218,6 +219,26 @@ describe("explainer in the app", () => {
     release(answer);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(inspect().getJob(blocked.id)?.output?.decisionCard).toBeUndefined();
+  });
+
+  // Zweitprüfung t_b73103ef B1: Eine Karte zu einem früheren Prüfstand (Neuplanung,
+  // neuer Befund) erreicht weder die Job-API (warten.py) noch die Startseite, und der
+  // neue Stand bekommt sofort eine eigene Karte statt der 10-Minuten-Sperre.
+  it("hides a stale card from the job API and explains the new review state at once", async () => {
+    const { blocked, inbox, inspect, prompts, getJob } = await setup(answer);
+    await inbox();
+    await settle(() => Boolean(inspect().getJob(blocked.id)?.output?.decisionCard));
+    expect((await getJob(blocked.id)).job.output.decisionCard).toMatchObject({ empfehlung: { aktion: "Freigeben" } });
+    const stale = inspect().getJob(blocked.id)!.output!;
+    const replanned = { ...stale, plan: "```host-run\n{\"steps\":[{\"run\":\"rm -rf /srv/backup\"}]}\n```" };
+    inspect().updateJob(blocked.id, { status: "blocked_user_approval", output: replanned });
+    expect((await getJob(blocked.id)).job.output.decisionCard).toBeUndefined();
+    const view = await inbox();
+    expect(view.cards[0].decision).toBeUndefined();
+    expect(view.cards[0].findings).toHaveLength(2);
+    await settle(() => prompts.length === 2);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("/srv/backup");
   });
 
   it("runs no explainer and shows the old view with COCKPIT_DECISION_CARD=off", async () => {
