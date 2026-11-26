@@ -225,6 +225,10 @@ James meldet ihn Jochen. Auch hier sieht ein Automation-Token nur Jobs seines ei
 
 **Gewählt: James holt, das Cockpit schickt nichts.** Das Cockpit bekommt keinen Telegram-Bot-Token
 und keinen Webhook — es braucht damit kein neues Geheimnis und keine ausgehende Verbindung.
+**Ausnahme seit 26.11.2026 (Karte t_1e9bc441):** Für Klasse A auf der Box (Wegwerf-Gäste und Ports nur
+im Werkstatt-Netz `vmbr1`) schickt das Cockpit Jochen das Angebot selbst über einen eigenen Bot und gibt
+auf seinen Tipp frei. Das ist eingeschaltet nur mit `telegram.env`, alles Übrige bleibt wie hier
+beschrieben (`doc/setup/telegram-freigabe.md`).
 
 1. **James' eigene Jobs (der Hauptfall):** Endet ein Job in `blocked_user_approval`, liefert das
    Cockpit in der Job-Antwort (`GET /api/hermes/jobs/:id` und die fertige Antwort von

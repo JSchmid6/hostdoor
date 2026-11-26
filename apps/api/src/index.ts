@@ -2,6 +2,9 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
+// Der Bot-Token der Telegram-Freigabe lebt nur in config; Kindprozesse
+// (opencode, copilot, tmux) erben process.env und sollen ihn nie sehen.
+delete process.env.COCKPIT_TELEGRAM_BOT_TOKEN;
 const app = await createApp({ config });
 
 try {

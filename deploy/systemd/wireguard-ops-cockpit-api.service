@@ -22,6 +22,11 @@ EnvironmentFile=-/etc/wireguard-ops-cockpit/instance-role.env
 # CA, erlaubte Besitzer. Root-eigen 0600, die Agent-Units sehen das Verzeichnis
 # nicht. Optional (-): ohne Datei stoppt ein Plan mit Paket als unvollständig.
 EnvironmentFile=-/etc/wireguard-ops-cockpit/forgejo.env
+# Jochens Ja per Telegram für Klasse A (doc/setup/telegram-freigabe.md): Schalter,
+# Token des Cockpit-eigenen Bots, Jochens Telegram-Nutzer-ID. Root-eigen 0600 (der
+# Deploy setzt die Rechte des Ordners), die Agent-Units sehen das Verzeichnis nicht.
+# Optional (-): ohne Datei gibt es nur den Cockpit-Klick.
+EnvironmentFile=-/etc/wireguard-ops-cockpit/telegram.env
 ExecStart=/opt/node-v22.23.4-linux-x64/bin/node /opt/wireguard-ops-cockpit/apps/api/dist/index.js
 Restart=always
 RestartSec=5

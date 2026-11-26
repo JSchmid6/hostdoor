@@ -129,6 +129,7 @@ import {
   type ReviewedFile,
 } from "./host-run.js";
 import { forgejoApiFetch, loadHostRunPackage, type ForgejoFetch, type PackageSource } from "./host-run-package.js";
+import { createTelegramApproval, telegramBotCall, type TelegramCall } from "./telegram-approval.js";
 
 interface AppOptions {
   config?: AppConfig;
@@ -168,6 +169,13 @@ interface AppOptions {
   // The tmux runtime. Defaults to the local tmux (config.tmuxMode); tests
   // inject one to stand for a tmux server that did not survive a restart.
   tmuxAdapter?: TmuxAdapter;
+  // The Cockpit's own Telegram bot for Jochens Ja (telegram-approval.ts).
+  // Defaults to the Bot API with config.telegramApproval's token; tests inject a stub.
+  telegramCall?: TelegramCall;
+  // Takt der Telegram-Freigabe (Angebote senden, Tipps lesen); 0 = kein Takt,
+  // tests call the tick themselves. telegramNow: the clock of its window (tests move it).
+  telegramPollMs?: number;
+  telegramNow?: () => number;
 }
 
 interface LoginAttemptState {
@@ -1640,6 +1648,7 @@ export async function createApp(options: AppOptions = {}) {
 
   const app = Fastify({ logger: false }) as FastifyInstance & {
     processDueScheduledRunbooks?: () => Promise<void>;
+    telegramApprovalTick?: () => Promise<void>;
   };
 
   const schedulerInterval = setInterval(() => {
@@ -1648,8 +1657,32 @@ export async function createApp(options: AppOptions = {}) {
 
   app.processDueScheduledRunbooks = processDueScheduledRunbooks;
 
+  // Jochens Ja per Telegram für Klasse A (card t_1e9bc441): only on box, only
+  // when telegram.env switched it on completely; otherwise nothing runs and the
+  // Cockpit click is the only way, as before.
+  const telegramApproval = config.telegramApproval && config.instanceRole === "box"
+    ? createTelegramApproval({
+      settings: config.telegramApproval,
+      role: config.instanceRole,
+      database,
+      call: options.telegramCall ?? telegramBotCall(config.telegramApproval.token),
+      approve: approveFromTelegram,
+      envelopeErrors: (job) => {
+        const owner = database.getJobOwnerId(job.id);
+        return owner ? envelopeErrorsFor(job, job.output?.envelope as ExecutionEnvelope | undefined, owner, jobIntent(job), true) : ["job owner is unavailable"];
+      },
+      link: (jobId) => cardLink(`job-${jobId}`, config.webUrl ?? null),
+      ...(options.telegramNow ? { now: options.telegramNow } : {}),
+    })
+    : null;
+  const telegramInterval = telegramApproval && options.telegramPollMs !== 0
+    ? setInterval(() => { void telegramApproval.tick(); }, options.telegramPollMs ?? 15_000)
+    : null;
+  if (telegramApproval) app.telegramApprovalTick = telegramApproval.tick;
+
   app.addHook("onClose", async () => {
     clearInterval(schedulerInterval);
+    if (telegramInterval) clearInterval(telegramInterval);
     database.close();
   });
 
@@ -1662,6 +1695,7 @@ export async function createApp(options: AppOptions = {}) {
       agentIsolation: Boolean(config.agentBrokerSocket && existsSync(config.agentBrokerSocket)),
       runnerIsolation: Boolean(config.runnerBrokerSocket && existsSync(config.runnerBrokerSocket)),
       typedExecutor: Boolean(config.executorBrokerSocket && existsSync(config.executorBrokerSocket)),
+      telegramApproval: telegramApproval !== null,
       warning: config.opencodeModel === config.safetyOpencodeModel
         ? "Planner and safety reviewer use the same configured model; role isolation remains, but correlated errors are more likely."
         : null,
@@ -2595,9 +2629,11 @@ export async function createApp(options: AppOptions = {}) {
   }
 
   // Wartet ein Job auf Jochen, bekommt James den Direktlink auf die Karte mit
-  // und schickt ihn per Telegram weiter — ohne dass das Cockpit selbst einen
-  // Bot-Token braucht.
-  function withOperatorLink(job: JobRecord): JobRecord & { operatorLink?: string } {
+  // und schickt ihn per Telegram weiter (das Cockpit selbst schickt nur das
+  // Klasse-A-Angebot der Box, telegram-approval.ts).
+  // Hat das Cockpit Jochen die Freigabe per Telegram angeboten (Klasse A),
+  // steht das mit am Job: James muss den Link dann nicht noch einmal schicken.
+  function withOperatorLink(job: JobRecord): JobRecord & { operatorLink?: string; telegramOffer?: Record<string, unknown> } {
     // Nach außen (Job-API, warten.py) nur eine gültige Entscheidungskarte: Passt
     // sie nicht zum Prüfstand oder wartet der Job nicht mehr, fehlt das Feld.
     if (job.output && "decisionCard" in job.output
@@ -2605,9 +2641,12 @@ export async function createApp(options: AppOptions = {}) {
       const { decisionCard: _stale, ...output } = job.output;
       job = { ...job, output };
     }
-    return job.subjectId === "hermes-change" && job.status === "blocked_user_approval"
-      ? { ...job, operatorLink: cardLink(`job-${job.id}`, config.webUrl ?? null) }
-      : job;
+    if (job.subjectId !== "hermes-change") return job;
+    const offer = database.getTelegramOfferForJob(job.id);
+    const telegramOffer = offer ? { telegramOffer: { sentAt: offer.createdAt, expiresAt: offer.expiresAt, usedAt: offer.usedAt } } : {};
+    return job.status === "blocked_user_approval"
+      ? { ...job, operatorLink: cardLink(`job-${job.id}`, config.webUrl ?? null), ...telegramOffer }
+      : { ...job, ...telegramOffer };
   }
 
   // Kein Platz am Host bis zum Ablauf des Freigabefensters: Auf dem Host lief
@@ -3128,9 +3167,7 @@ export async function createApp(options: AppOptions = {}) {
     if (typeof body.reason !== "string" || !body.reason.trim()) {
       return reply.code(400).send({ message: "a reason is required for every decision" });
     }
-    const intent = typeof job.output?.explanation === "object" && job.output.explanation
-      ? String((job.output.explanation as Record<string, unknown>).intent || "Approved Hermes change")
-      : "Approved Hermes change";
+    const intent = jobIntent(job);
     // Notfall-Durchlass: Der Job wartet nicht auf einen geprüften Plan, sondern
     // hängt am offenen Circuit Breaker. Freigeben lässt genau diesen Job durch —
     // er wird geplant und geprüft wie jeder andere (der Breaker allein entfällt).
@@ -3138,9 +3175,40 @@ export async function createApp(options: AppOptions = {}) {
     if (breaker && typeof breaker === "object" && !job.output?.envelope) {
       return decideBreakerOverride(job, jobOwnerId, actor, body.decision, body.reason.trim(), intent, breaker, reply);
     }
+    const decided = await decideChange(job, jobOwnerId, actor, body.decision, body.reason.trim(), { renewAfterExpiry: true });
+    return reply.code(decided.code).send(decided.body);
+  });
+
+  // Jochens Tipp in Telegram (telegram-approval.ts): the decision of his
+  // operator account, through exactly the route's decideChange, without the
+  // re-signing after expiry.
+  async function approveFromTelegram(job: JobRecord, reason: string, via: Record<string, unknown>): Promise<{ ok: boolean; message: string }> {
+    const operator = database.getUserByUsername(config.adminUsername);
+    const jobOwnerId = database.getJobOwnerId(job.id);
+    if (!operator || operator.role !== "admin") return { ok: false, message: "operator account unavailable" };
+    if (!jobOwnerId) return { ok: false, message: "job owner is unavailable" };
+    const decided = await decideChange(job, jobOwnerId, operator, "approved", reason, { renewAfterExpiry: false, via });
+    return { ok: decided.code === 202, message: String(decided.body.message ?? (decided.code === 202 ? "started" : `refused (${decided.code})`)) };
+  }
+
+  function jobIntent(job: JobRecord): string {
+    return typeof job.output?.explanation === "object" && job.output.explanation
+      ? String((job.output.explanation as Record<string, unknown>).intent || "Approved Hermes change")
+      : "Approved Hermes change";
+  }
+
+  // The decision about a change job waiting for the operator, shared by the
+  // Cockpit's approval route and Jochen's tap in Telegram (telegram-approval.ts):
+  // the same envelope check, the same audit, the same start. Only the route
+  // re-signs an envelope whose deadline alone has passed (renewAfterExpiry).
+  async function decideChange(
+    job: JobRecord, jobOwnerId: string, actor: UserSummary, decision: "approved" | "rejected", reason: string,
+    options: { renewAfterExpiry: boolean; via?: Record<string, unknown> },
+  ): Promise<{ code: number; body: Record<string, unknown> }> {
+    const intent = jobIntent(job);
     let reviewedEnvelope = job.output?.envelope as ExecutionEnvelope | undefined;
     let renewedAfterExpiry: { previousExpiresAt: string; notAfter: string } | null = null;
-    if (body.decision === "approved") {
+    if (decision === "approved") {
       let envelopeErrors = envelopeErrorsFor(job, reviewedEnvelope, jobOwnerId, intent, true);
       // Freigabe nach Ablauf (13.11.2026, t_36523a6a): Ist allein die Frist
       // abgelaufen, gibt Jochens Sitzung den Job trotzdem frei — derselbe
@@ -3149,7 +3217,7 @@ export async function createApp(options: AppOptions = {}) {
       // James bestellte neu, die neue Prüfung stoppte erneut, Jochen klickte
       // zweimal für dieselbe Entscheidung. Jede andere Abweichung bleibt ein Stopp.
       const notAfter = Date.parse(job.createdAt) + REACTIVATION_MAX_AGE_HOURS * 3_600_000;
-      if (reviewedEnvelope && envelopeErrors.length === 1 && envelopeErrors[0] === "execution envelope expired"
+      if (options.renewAfterExpiry && reviewedEnvelope && envelopeErrors.length === 1 && envelopeErrors[0] === "execution envelope expired"
         && !reviewedEnvelope.operatorApproved && Date.now() < notAfter) {
         const previousExpiresAt = reviewedEnvelope.expiresAt;
         reviewedEnvelope = renewExecutionEnvelope(reviewedEnvelope, config.executionEnvelopeSecret, config.approvalTtlMinutes, new Date(notAfter));
@@ -3167,30 +3235,30 @@ export async function createApp(options: AppOptions = {}) {
         // dann "abgelaufen" und bietet "Neu bestellen lassen". Jede andere
         // Abweichung (Signatur, Drift) ist kein Ablauf und wird nicht so genannt.
         const expired = envelopeErrors.includes("execution envelope expired");
-        return reply.code(409).send({ message: expired ? "execution envelope expired" : "execution envelope validation failed", envelopeErrors, job: blocked });
+        return { code: 409, body: { message: expired ? "execution envelope expired" : "execution envelope validation failed", envelopeErrors, job: blocked } };
       }
     }
     if (renewedAfterExpiry) {
       database.createAudit({ actorId: actor.id, action: "hermes.change.approved_after_expiry", targetType: "job", targetId: job.id, details: renewedAfterExpiry });
     }
     database.createAudit({
-      actorId: actor.id, action: `hermes.change.${body.decision}`, targetType: "job", targetId: job.id,
-      details: { reason: body.reason?.trim() || null },
+      actorId: actor.id, action: `hermes.change.${decision}`, targetType: "job", targetId: job.id,
+      details: { reason, ...(options.via ? { via: options.via } : {}) },
     });
-    if (body.decision === "rejected") {
+    if (decision === "rejected") {
       const rejected = updateHermesJob(job.id, "rejected", explanation({
-        phase: "finished", intent, reason: body.reason?.trim() || "Operator rejected the proposed change.",
+        phase: "finished", intent, reason: reason || "Operator rejected the proposed change.",
         completed: ["Planner proposal", "Safety review", "Policy evaluation", "Operator decision"],
         recommendedAction: "Narrow or revise the intent before submitting a new change job.",
         rollbackAvailable: Boolean((job.output?.policy as Record<string, unknown> | undefined)?.rollbackAvailable),
-      }), { ...job.output, approval: { decision: "rejected", reason: body.reason?.trim() || null, actorId: actor.id } });
-      return { job: rejected };
+      }), { ...job.output, approval: { decision: "rejected", reason, actorId: actor.id } });
+      return { code: 200, body: { job: rejected } };
     }
 
     const proposalPath = typeof job.output?.proposalPath === "string" ? path.resolve(job.output.proposalPath) : "";
     const proposalRoot = path.resolve(path.join(path.dirname(config.dbPath), "proposals"));
     if (!proposalPath.startsWith(`${proposalRoot}${path.sep}`)) {
-      return reply.code(409).send({ message: "stored proposal path is outside the protected proposal directory" });
+      return { code: 409, body: { message: "stored proposal path is outside the protected proposal directory" } };
     }
     // Die Sitzung gehört dem Auftraggeber (James' Automation-Konto), nicht dem
     // freigebenden Admin: mit actor.id fände eine Admin-Freigabe sie nie.
@@ -3201,18 +3269,18 @@ export async function createApp(options: AppOptions = {}) {
         phase: "finished", intent, reason: "Approval was recorded, but the executor runtime is unavailable.",
         neededToContinue: ["Restore the tmux and planner runtime."],
         recommendedAction: "Restore the prerequisite and submit a new change job.",
-      }), { ...job.output, approval: { decision: "approved", reason: body.reason?.trim() || null, actorId: actor.id } });
-      return { job: blocked };
+      }), { ...job.output, approval: { decision: "approved", reason, actorId: actor.id } });
+      return { code: 200, body: { job: blocked } };
     }
     try {
       await readFile(proposalPath, "utf-8");
     } catch {
-      return reply.code(409).send({ message: "stored proposal is no longer available" });
+      return { code: 409, body: { message: "stored proposal is no longer available" } };
     }
     // Two approvals of the same job may both pass the check above while this
     // request awaited the file; only the first one starts the run.
     if (database.getJob(job.id)?.status !== "blocked_user_approval") {
-      return reply.code(409).send({ message: "job is not awaiting operator approval" });
+      return { code: 409, body: { message: "job is not awaiting operator approval" } };
     }
 
     const running = updateHermesJob(job.id, "running", explanation({
@@ -3223,7 +3291,7 @@ export async function createApp(options: AppOptions = {}) {
     }), {
       ...job.output,
       envelope: approveExecutionEnvelope(reviewedEnvelope as ExecutionEnvelope, config.executionEnvelopeSecret, config.approvalTtlMinutes),
-      approval: { decision: "approved", reason: body.reason?.trim() || null, actorId: actor.id, ...(renewedAfterExpiry ? { afterExpiry: renewedAfterExpiry } : {}) },
+      approval: { decision: "approved", reason, actorId: actor.id, ...(options.via ? { via: options.via } : {}), ...(renewedAfterExpiry ? { afterExpiry: renewedAfterExpiry } : {}) },
     });
 
     void (async () => {
@@ -3266,8 +3334,8 @@ export async function createApp(options: AppOptions = {}) {
         }), { ...running.output });
       }
     })();
-    return reply.code(202).send({ job: running, message: "Approval recorded; execution started. Poll the job endpoint." });
-  });
+    return { code: 202, body: { job: running, message: "Approval recorded; execution started. Poll the job endpoint." } };
+  }
 
   async function decideBreakerOverride(
     job: JobRecord, jobOwnerId: string, actor: UserSummary, decision: "approved" | "rejected", reason: string, intent: string,
