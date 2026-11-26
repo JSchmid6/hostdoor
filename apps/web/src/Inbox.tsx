@@ -7,7 +7,10 @@ import { request } from "./lib";
  * Zeigt nur, was Jochen entscheiden muss: je Aufgabe Art, Frist und die
  * Absicht in einem Satz, dazu "Details". Erst der Dialog zeigt den Grund des
  * Stopps, die Befunde des Prüfers (ausklappbar), Zeiten, Kennung und die
- * Knöpfe mit Pflichtfeld Grund. Gebaut für das Handy: schmale Breite zuerst,
+ * Knöpfe mit Pflichtfeld Grund. Trägt der Job eine Entscheidungskarte des
+ * Erklärers (Klartext: was, wo, warum je Befund, schlimmster Fall, Rückweg,
+ * Empfehlung), steht sie oben, die Knöpfe direkt darunter und alles Weitere
+ * eingeklappt; ohne sie bleibt die bisherige Ansicht. Gebaut für das Handy: schmale Breite zuerst,
  * große Knöpfe, der Dialog füllt dort den Bildschirm. Ob eine Entscheidung gilt,
  * entscheidet der Server; diese Seite ruft nur die bestehenden Wege auf.
  */
@@ -19,6 +22,16 @@ interface Finding {
   location: string;
   severity: string;
   detail: string;
+}
+
+// Die Entscheidungskarte (apps/api/src/decision-card.ts); `warum` folgt den Befunden Satz für Satz.
+export interface Decision {
+  was: string;
+  wo: string;
+  warum: string[];
+  schlimmsterFall: string;
+  rueckweg: string;
+  empfehlung: { aktion: "Freigeben" | "Ablehnen" | "Einengen"; grund: string };
 }
 
 export interface InboxCard {
@@ -34,6 +47,7 @@ export interface InboxCard {
   approvableAfterExpiry?: boolean;
   link: string;
   intent?: string;
+  decision?: Decision;
   jobId?: string;
   approvalId?: string;
   anomalyId?: string;
@@ -62,6 +76,8 @@ const SOURCE_LABELS: Record<Finding["source"], string> = {
   "update-review": "Update-Prüfer",
   retention: "Aufräum-Dienst",
 };
+
+const SEVERITY_LABELS: Record<string, string> = { high: "schwer", medium: "mittel", low: "leicht" };
 
 const POLL_MS = 30_000;
 
@@ -116,6 +132,32 @@ function FindingItem({ finding }: { finding: Finding }) {
         {finding.detail ? <pre>{finding.detail}</pre> : <p>Keine Begründung gespeichert.</p>}
       </details>
     </li>
+  );
+}
+
+/** Die Entscheidungskarte: höchstens eine Zeile je Feld, je Befund ein Satz mit seiner Schwere. */
+function DecisionBlock({ decision, findings }: { decision: Decision; findings: Finding[] }) {
+  return (
+    <div className="inbox-decision" data-testid="decision-card">
+      <p><strong>Was:</strong> {decision.was} <span className="inbox-decision-where">· {decision.wo}</span></p>
+      <div>
+        <strong>Warum du gefragt wirst:</strong>
+        <ul className="inbox-decision-why">
+          {decision.warum.map((line, index) => {
+            const severity = findings[index]?.severity ?? "";
+            return (
+              <li key={index}>
+                {line}
+                {severity ? <span className={`inbox-severity inbox-severity-${severity}`}> ({SEVERITY_LABELS[severity] ?? severity})</span> : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <p><strong>Schlimmstenfalls:</strong> {decision.schlimmsterFall}</p>
+      <p><strong>Rückweg:</strong> {decision.rueckweg}</p>
+      <p className="inbox-recommendation"><strong>Empfehlung:</strong> <span className={`inbox-action inbox-action-${decision.empfehlung.aktion.toLowerCase()}`}>{decision.empfehlung.aktion}</span> — {decision.empfehlung.grund}</p>
+    </div>
   );
 }
 
@@ -204,6 +246,68 @@ function Card({ card, now, highlighted, onDone }: { card: InboxCard; now: number
       : <span className="inbox-deadline" aria-label="Frist">läuft ab in {left}</span>
   ) : null;
   const reference = card.jobId ? `Job ${card.jobId}` : card.approvalId ? `Freigabe ${card.approvalId}` : card.anomalyId ? `Anomalie ${card.anomalyId}` : card.id;
+  // Was die bisherige Ansicht zeigt; mit Entscheidungskarte eingeklappt darunter.
+  const details = (
+    <>
+      {card.decision ? <p className="inbox-reason"><strong>Absicht:</strong> {card.title}</p> : null}
+      {card.intent ? <p className="inbox-reason"><strong>Ganze Absicht:</strong> {card.intent}</p> : null}
+      <p className="inbox-reason"><strong>Warum gestoppt:</strong> {card.reason}</p>
+      {card.findings.length > 0 ? (
+        <div>
+          <strong>Befunde ({card.findings.length})</strong>
+          <ul className="inbox-findings">
+            {card.findings.map((finding, index) => <FindingItem key={index} finding={finding} />)}
+          </ul>
+        </div>
+      ) : null}
+      <dl className="inbox-facts">
+        <dt>Angelegt</dt>
+        <dd>{when(card.createdAt)}</dd>
+        <dt>Frist</dt>
+        <dd>{card.expiresAt ? <>{when(card.expiresAt)} {deadline}</> : "keine"}</dd>
+        <dt>Kennung</dt>
+        <dd>{reference}</dd>
+      </dl>
+    </>
+  );
+
+  // Entscheiden: Fristhinweis, Grund und Knöpfe — mit Entscheidungskarte direkt unter ihr.
+  const decide = (
+    <>
+      {expired ? (
+        <p className="inbox-expired-note">
+          {card.kind === "approval"
+            ? "Die Frist ist abgelaufen: Diese Freigabe gilt nicht mehr. Plane den Lauf unter „Mehr“ neu; hier kannst du sie nur noch ablehnen."
+            : approvableExpired
+              ? "Die Frist ist abgelaufen, der geprüfte Plan ist unverändert: Du kannst ihn trotzdem freigeben — die Frist wird dabei erneuert."
+              : "Die Frist ist abgelaufen: Diese Freigabe gilt nicht mehr. Lass James die Änderung neu bestellen — dann wird sie frisch geprüft."}
+        </p>
+      ) : null}
+      <label className="inbox-reason-field">
+        {expired && card.kind !== "approval" && !approvableExpired ? "Notiz an James (optional)" : `Grund (Pflicht${minLength > 1 ? `, mind. ${minLength} Zeichen` : ""})`}
+        <textarea value={reason} rows={card.decision ? 1 : 2} onChange={(event) => setReason(event.target.value)} />
+      </label>
+      <div className="inbox-actions">
+        {approvableExpired ? (
+          <button className="inbox-button inbox-button-primary" disabled={busy || !reasonOk} onClick={() => act("approve")}>
+            Freigeben (Frist erneuern)
+          </button>
+        ) : expired && card.jobId && card.kind !== "approval" ? (
+          <button className="inbox-button inbox-button-primary" disabled={busy} onClick={() => act("reorder")}>
+            Neu bestellen lassen
+          </button>
+        ) : !expired ? (
+          <button className="inbox-button inbox-button-primary" disabled={busy || !reasonOk} onClick={() => act("approve")}>
+            Freigeben
+          </button>
+        ) : null}
+        <button className="inbox-button inbox-button-danger" disabled={busy || !trimmed} onClick={() => act("reject")}>
+          {card.kind === "retention-anomaly" ? "Ablehnen (angehalten lassen)" : "Ablehnen"}
+        </button>
+      </div>
+      {error ? <p className="error" role="alert">{error}</p> : null}
+    </>
+  );
 
   return (
     <article id={`karte-${card.id}`} className={`inbox-card${highlighted ? " inbox-card-highlight" : ""}${expired ? " inbox-card-expired" : ""}`} data-testid="inbox-card">
@@ -211,7 +315,7 @@ function Card({ card, now, highlighted, onDone }: { card: InboxCard; now: number
         <span className="step-badge">{KIND_LABELS[card.kind]}</span>
         {deadline}
       </div>
-      <h3 className="inbox-title">{card.title}</h3>
+      <h3 className="inbox-title">{card.decision?.was ?? card.title}</h3>
       <button className="inbox-button" aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId} onClick={() => setOpen(true)}>
         Details
       </button>
@@ -222,57 +326,24 @@ function Card({ card, now, highlighted, onDone }: { card: InboxCard; now: number
               <span className="step-badge">{KIND_LABELS[card.kind]}</span>
               <button ref={closeRef} className="inbox-close" aria-label="Schließen" onClick={() => setOpen(false)}>✕</button>
             </div>
-            <h3 id={`${dialogId}-title`} className="inbox-title">{card.title}</h3>
-            {card.intent ? <p className="inbox-reason"><strong>Ganze Absicht:</strong> {card.intent}</p> : null}
-            <p className="inbox-reason"><strong>Warum gestoppt:</strong> {card.reason}</p>
-            {card.findings.length > 0 ? (
-              <div>
-                <strong>Befunde ({card.findings.length})</strong>
-                <ul className="inbox-findings">
-                  {card.findings.map((finding, index) => <FindingItem key={index} finding={finding} />)}
-                </ul>
-              </div>
-            ) : null}
-            <dl className="inbox-facts">
-              <dt>Angelegt</dt>
-              <dd>{when(card.createdAt)}</dd>
-              <dt>Frist</dt>
-              <dd>{card.expiresAt ? <>{when(card.expiresAt)} {deadline}</> : "keine"}</dd>
-              <dt>Kennung</dt>
-              <dd>{reference}</dd>
-            </dl>
-            {expired ? (
-              <p className="inbox-expired-note">
-                {card.kind === "approval"
-                  ? "Die Frist ist abgelaufen: Diese Freigabe gilt nicht mehr. Plane den Lauf unter „Mehr“ neu; hier kannst du sie nur noch ablehnen."
-                  : approvableExpired
-                    ? "Die Frist ist abgelaufen, der geprüfte Plan ist unverändert: Du kannst ihn trotzdem freigeben — die Frist wird dabei erneuert."
-                    : "Die Frist ist abgelaufen: Diese Freigabe gilt nicht mehr. Lass James die Änderung neu bestellen — dann wird sie frisch geprüft."}
-              </p>
-            ) : null}
-            <label className="inbox-reason-field">
-              {expired && card.kind !== "approval" && !approvableExpired ? "Notiz an James (optional)" : `Grund (Pflicht${minLength > 1 ? `, mind. ${minLength} Zeichen` : ""})`}
-              <textarea value={reason} rows={2} onChange={(event) => setReason(event.target.value)} />
-            </label>
-            <div className="inbox-actions">
-              {approvableExpired ? (
-                <button className="inbox-button inbox-button-primary" disabled={busy || !reasonOk} onClick={() => act("approve")}>
-                  Freigeben (Frist erneuern)
-                </button>
-              ) : expired && card.jobId && card.kind !== "approval" ? (
-                <button className="inbox-button inbox-button-primary" disabled={busy} onClick={() => act("reorder")}>
-                  Neu bestellen lassen
-                </button>
-              ) : !expired ? (
-                <button className="inbox-button inbox-button-primary" disabled={busy || !reasonOk} onClick={() => act("approve")}>
-                  Freigeben
-                </button>
-              ) : null}
-              <button className="inbox-button inbox-button-danger" disabled={busy || !trimmed} onClick={() => act("reject")}>
-                {card.kind === "retention-anomaly" ? "Ablehnen (angehalten lassen)" : "Ablehnen"}
-              </button>
-            </div>
-            {error ? <p className="error" role="alert">{error}</p> : null}
+            {card.decision ? (
+              <>
+                <h3 id={`${dialogId}-title`} className="inbox-visually-hidden">{card.decision.was}</h3>
+                <DecisionBlock decision={card.decision} findings={card.findings} />
+                {/* Klebt am unteren Rand des Dialogs: der Knopf bleibt ohne Scrollen sichtbar. */}
+                <div className="inbox-decide-bar">{decide}</div>
+                <details className="inbox-more">
+                  <summary>Alles Weitere (Absicht, Grund, Befunde im Wortlaut, Kennung)</summary>
+                  {details}
+                </details>
+              </>
+            ) : (
+              <>
+                <h3 id={`${dialogId}-title`} className="inbox-title">{card.title}</h3>
+                {details}
+                {decide}
+              </>
+            )}
           </div>
         </div>
       ) : null}

@@ -80,7 +80,7 @@ const planWith = (...manifests: Array<{ version: string }>) => [
 // exactly as on the host ("prompt length <n> exceeds verifier limit <bound>").
 const { validateRequest } = await import("../../agent-broker/src/index.mjs") as { validateRequest: (request: unknown) => unknown };
 
-async function setup(options: { plan: string; doorkeeper: string; intent?: string; ownedByAutomation?: boolean; diensteShow?: (path: string) => Record<string, unknown>; seed?: (database: CockpitDatabase, sessionId: string) => void; hostState?: () => Record<string, unknown> | null; instanceRole?: "vps" | "lab0" | null; doorkeeperWait?: Promise<void>; logTail?: string; runStatus?: string; verifier?: () => Record<string, unknown>; runnerBroker?: boolean; forgejoFetch?: ForgejoFetch; packageOwners?: string[] }) {
+async function setup(options: { plan: string; doorkeeper: string; intent?: string; ownedByAutomation?: boolean; diensteShow?: (path: string) => Record<string, unknown>; seed?: (database: CockpitDatabase, sessionId: string) => void; hostState?: () => Record<string, unknown> | null; instanceRole?: "vps" | "lab0" | null; doorkeeperWait?: Promise<void>; logTail?: string; runStatus?: string; verifier?: () => Record<string, unknown>; runnerBroker?: boolean; forgejoFetch?: ForgejoFetch; packageOwners?: string[]; explainer?: string }) {
   const dir = mkdtempSync(path.join(tmpdir(), "host-run-flow-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const seed = new CockpitDatabase(path.join(dir, "cockpit.sqlite"));
@@ -113,6 +113,8 @@ async function setup(options: { plan: string; doorkeeper: string; intent?: strin
   const agentCalls = await listen(path.join(dir, "agent.sock"), (request) => {
     try { validateRequest(request); } catch (error) { return { ok: false, error: (error as Error).message }; }
     if (request.role === "planner") return { ok: true, output: options.plan };
+    // The explainer of the decision card runs on the safety role (decision-card.ts).
+    if (request.role === "safety" && options.explainer) return { ok: true, output: options.explainer, engine: { name: "claude", model: "claude-opus-5-5" } };
     return options.verifier?.() ?? { ok: true, output: "VERIFICATION_STATUS: passed\nEVIDENCE: no upgradable packages\nREASON: done" };
   });
   const doorkeeperPrompts: string[] = [];
@@ -488,6 +490,35 @@ describe("host door through the API", () => {
     expect(verifier).toHaveLength(1);
     expect(verifier[0]).toContain("First evaluate the supplied signed runner handoff's raw command output");
     expect(verifier[0]).toContain("that is your sandbox, not evidence against the handoff");
+  });
+
+  it("writes the decision card through the safety role as soon as a job waits for the operator, without touching the envelope", async () => {
+    const flow = await setup({ plan: planWith(hostRunWithRepair), doorkeeper: [
+      "VERDICT: flag", "FINDING: borg repair without the operator", "CLASS: X4", "WHERE: S3:L1",
+      "CODE: /usr/local/sbin/cockpit-borg-action repair", "PATH: a repair can drop damaged archives from the only off-host backup", "SEVERITY: high",
+    ].join("\n"), explainer: [
+      "WAS: Das Backup auf Lab0 wird repariert.", "WO: VPS (Produktivserver)",
+      "W1: Eine Reparatur kann beschädigte Archive aus dem einzigen Backup außer Haus entfernen.",
+      "SCHLIMMSTENFALLS: Ältere Stände der Familiendaten gehen verloren.", "RUECKWEG: Keiner für entfernte Archive.",
+      "EMPFEHLUNG: Ablehnen — erst prüfen, ob eine Reparatur wirklich nötig ist.",
+    ].join("\n") });
+    const job = await flow.submit();
+    expect(job.status).toBe("blocked_user_approval");
+    const deadline = Date.now() + 5_000;
+    while (!flow.inspect.getJob(job.id)?.output?.decisionCard && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    const after = flow.inspect.getJob(job.id)!;
+    expect(after.output?.decisionCard).toMatchObject({ warum: ["Eine Reparatur kann beschädigte Archive aus dem einzigen Backup außer Haus entfernen."], empfehlung: { aktion: "Ablehnen" }, engine: { name: "claude" } });
+    expect(after.status).toBe("blocked_user_approval");
+    expect(after.output?.envelope).toEqual(job.output?.envelope);
+    expect(after.output?.policy).toEqual(job.output?.policy);
+    const explainer = flow.agentCalls.filter((call) => call.role === "safety").map((call) => String(call.prompt));
+    expect(explainer).toHaveLength(1);
+    expect(explainer[0]).toContain("You write the decision card for Jochen");
+    expect(explainer[0]).toContain("W1: doorkeeper, class X4, severity high, at S3:L1");
+    // The approval still runs exactly the signed plan; the card changes nothing at the door.
+    const approved = await flow.app.inject({ method: "POST", url: `/api/hermes/jobs/${job.id}/approval`, headers: { cookie: flow.cookie }, payload: { decision: "approved", reason: "gelesen" } });
+    expect(approved.statusCode).toBe(202);
+    expect((await flow.settled(job.id)).status).toBe("completed");
   });
 
   // Grundsatz 4 (card t_abe2651b): deleting backups goes to the operator as
