@@ -3617,7 +3617,7 @@ export async function createApp(options: AppOptions = {}) {
     return {
       session,
       plans: plansList,
-      jobs: database.listJobsForSession(sessionId),
+      jobs: database.listJobsForSession(sessionId).map(withOperatorLink),
       progress: {
         status: isRunning ? "running" : plansList.length > 0 ? "completed" : "idle",
         elapsedSeconds: elapsed,
