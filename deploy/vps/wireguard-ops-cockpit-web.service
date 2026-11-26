@@ -1,6 +1,6 @@
 [Unit]
 Description=WireGuard Ops Cockpit web container (VPS, nginx + UI on 10.0.0.1:8080)
-Documentation=https://github.com/JSchmid6/wireguard-ops-cockpit/blob/main/doc/setup/self-update.md
+Documentation=https://github.com/JSchmid6/hostdoor/blob/main/doc/setup/self-update.md
 Requires=docker.service
 After=docker.service network-online.target
 

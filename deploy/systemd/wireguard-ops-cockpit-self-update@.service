@@ -1,6 +1,6 @@
 [Unit]
 Description=WireGuard Ops Cockpit self-update deploy (%i)
-Documentation=https://github.com/JSchmid6/wireguard-ops-cockpit
+Documentation=https://github.com/JSchmid6/hostdoor
 Wants=network-online.target
 After=network-online.target
 

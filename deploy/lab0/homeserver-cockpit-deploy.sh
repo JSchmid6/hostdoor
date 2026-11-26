@@ -133,7 +133,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Konstanten
 # ---------------------------------------------------------------------------
-REPO_URL="https://github.com/JSchmid6/wireguard-ops-cockpit.git"
+REPO_URL="https://github.com/JSchmid6/hostdoor.git"
 REPO_COMMIT="${REPO_COMMIT:-49ed9f376d253071afc0fdea1730612b9ebe5f70}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.31}"   # VPS-validierte Serie (VPS: 1.18.30)
 # Claude Code für Planer/Research über das Abo (Karte t_936d9b0f); aktiv erst mit
@@ -593,7 +593,7 @@ if [ "$NGINX_PREEXISTED" = "no" ]; then
 fi
 
 # Netz Richtung github + npm prüfen
-curl -fsS --max-time 15 -o /dev/null "https://github.com/JSchmid6/wireguard-ops-cockpit" \
+curl -fsS --max-time 15 -o /dev/null "https://github.com/JSchmid6/hostdoor" \
   || die "github.com nicht erreichbar. Fallback (Offline-Transfer über den VPS) nötig — stoppen und melden."
 curl -fsS --max-time 15 -o /dev/null "https://registry.npmjs.org/" \
   || die "registry.npmjs.org nicht erreichbar. Stoppen und melden."

@@ -18,7 +18,7 @@ set -euo pipefail
 
 REPO_COMMIT="@@REPO_COMMIT@@"
 DEPLOY_SHA256="@@DEPLOY_SHA256@@"
-DEPLOY_URL="https://raw.githubusercontent.com/JSchmid6/wireguard-ops-cockpit/${REPO_COMMIT}/deploy/lab0/homeserver-cockpit-deploy.sh"
+DEPLOY_URL="https://raw.githubusercontent.com/JSchmid6/hostdoor/${REPO_COMMIT}/deploy/lab0/homeserver-cockpit-deploy.sh"
 SECRETS_DIR=/root/cockpit-deploy
 
 echo "$(date -Is) box-stage2: Pin ${REPO_COMMIT}"

@@ -82,7 +82,7 @@ Honest limits are documented next to each guarantee, for example: credentials re
 Requirements: Node.js 22.23.4 (`.node-version`; `better-sqlite3` is a native module), `tmux` optional.
 
 ```bash
-git clone https://github.com/JSchmid6/wireguard-ops-cockpit.git hostdoor
+git clone https://github.com/JSchmid6/hostdoor.git
 cd hostdoor
 cp .env.example .env
 # set COCKPIT_ADMIN_PASSWORD, and COCKPIT_PLANNER_RUNTIME=demo-local for a planner without any LLM
