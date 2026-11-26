@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildHostRunReviewPrompt,
+  HOST_RUN_CLASS_A,
   HOST_RUN_REVIEW_INSTRUCTIONS,
   classifyHostRunFocus,
   hostRunHistoryFromJobs,
@@ -192,9 +193,14 @@ describe("buildHostRunReviewPrompt", () => {
     expect(box).toContain("deleting or rolling back a guest snapshot");
     expect(box).toContain("a Proxmox snapshot of every VM and container on the node");
     expect(box).not.toContain("run as root on the production host");
-    // Everything after the opening paragraph is the same contract on both hosts.
+    // Everything after the opening paragraph is the same contract on every host;
+    // box alone adds the class A question (t_1e9bc441), and only that.
+    expect(vps).not.toContain(HOST_RUN_CLASS_A);
+    expect(lab0).not.toContain(HOST_RUN_CLASS_A);
+    expect(box.split(HOST_RUN_CLASS_A)).toHaveLength(2);
     expect(lab0.slice(lab0.indexOf("Underneath you"))).toBe(vps.slice(vps.indexOf("Underneath you")));
-    expect(box.slice(box.indexOf("Underneath you"))).toBe(vps.slice(vps.indexOf("Underneath you")));
+    const boxContract = box.replace(`\n${HOST_RUN_CLASS_A}`, "");
+    expect(boxContract.slice(boxContract.indexOf("Underneath you"))).toBe(vps.slice(vps.indexOf("Underneath you")));
   });
 
   it("shows every step and check line with its id between nonce markers", () => {
