@@ -185,6 +185,27 @@ export interface UpdateReviewOutcome {
   // What the Cockpit itself found on GitHub about a second review of exactly
   // the installed commits (verifySecondReview). Only a self-update has one.
   secondReview?: SecondReviewCheck[];
+  // A self-update too large for one complete review: the next stage the
+  // Cockpit measured itself, or why it could not stage (planUpdateStage).
+  staging?: UpdateStaging;
+}
+
+// The next stage of a self-update too large for one complete review: a
+// commit on the first-parent line base..target whose own review material,
+// measured with the runner's self.diff, reaches the reviewer completely.
+export interface UpdateStage {
+  sha: string;
+  // Merges on the first-parent line from base up to and including sha, of all
+  // merges up to the target.
+  merges: number;
+  of: number;
+  subjects: string[];
+}
+
+export interface UpdateStaging {
+  target: string;
+  stage?: UpdateStage;
+  reason?: string;
 }
 
 // One installed commit's second review, as the Cockpit verified it.
@@ -788,7 +809,16 @@ export function updateReviewFindings(outcome: UpdateReviewOutcome): {
     for (const item of incomplete) {
       evidence.push(`not fully reviewed (${item.sha.slice(0, 12)}): ${item.incomplete.slice(0, 30).join(", ")}${item.incomplete.length > 30 ? ", ..." : ""}`);
     }
-    needed.push("Fix the collection of the review material (or split the update) so that every listed file reaches the reviewer completely, then submit it again.");
+    const stage = outcome.staging?.stage;
+    if (stage) {
+      const target = outcome.staging?.target ?? "";
+      gaps.push(`the update is too large for one complete review, so it was not sent to the reviewer; the next stage is ${stage.sha.slice(0, 12)}`);
+      evidence.push(`staging: next stage ${stage.sha} (${stage.merges} of ${stage.of} merges on the first-parent line, review material measured complete): ${stage.subjects.join("; ").slice(0, 600)}`);
+      needed.push(`Stage the update: submit a job with only \`self.update ${stage.sha}\` (${stage.merges} of ${stage.of} merges, its review material measured complete). Once it is installed, submit \`self.update ${target}\` again; its review proposes the next stage if one is still needed.`);
+    } else {
+      if (outcome.staging?.reason) evidence.push(`staging not possible: ${outcome.staging.reason.slice(0, 600)}`);
+      needed.push("Fix the collection of the review material (or split the update) so that every listed file reaches the reviewer completely, then submit it again.");
+    }
   }
   if (outcome.reviewerError) {
     gaps.push(`the reviewer did not answer (${outcome.reviewerError.slice(0, 300)})`);
@@ -950,6 +980,7 @@ export function summarizeUpdateReview(diffs: UpdateDiff[], outcome: UpdateReview
     findings: outcome.answer?.findings ?? [],
     notes: outcome.answer?.notes ?? "",
     secondReview: outcome.secondReview ?? [],
+    staging: outcome.staging ?? null,
     // A finding or gap that did not stop the job because of the second review.
     reported: secondReviewReports(outcome),
   };
@@ -1136,4 +1167,75 @@ export function githubApiFetch(timeoutMs = 15_000): GithubFetch {
     if (!response.ok) throw new Error(`GET ${apiPath.split("?")[0]} answered ${response.status}`);
     return await response.json();
   };
+}
+
+// Staging (card t_1606261a): a host that lags weeks behind (Lab0, box) brings
+// an update whose material no review can see completely — the runner caps its
+// excerpt at 200 KB, the review at UPDATE_REVIEW_MAX_PASSES passes — so every
+// such update stopped as incomplete, and with it every fix behind it. When the
+// material of one self.update is incomplete and no second review covers it,
+// the Cockpit measures the next stage itself instead of asking the reviewer
+// about a part:
+// 1. The first-parent line base..target from one GitHub compare of this
+//    repository (by its id, like the second review).
+// 2. Candidates are the first SECOND_REVIEW_MAX_MERGES commits on that line
+//    (never the target itself), so a stage can carry the second review's proof.
+// 3. fits(sha) asks the runner for self.diff of that commit (base = the
+//    deployed commit, the same base the stage will install on) and lays out
+//    the passes exactly as the review would; it fits only when nothing the
+//    reviewer must see is missing. The farthest fitting candidate is found by
+//    bisection (the material grows with the line; every answer is measured,
+//    never assumed).
+// The stage is a plan for the agent, never an install: the job stays
+// blocked_prerequisite, the agent submits `self.update <stage>` as its own job,
+// which gets its own complete review, then the target again. Not even the
+// first merge fitting, or anything unreadable, is an honest stop without
+// staging (the review runs as before).
+export async function updateFirstParentLine(base: string, sha: string, github: GithubFetch): Promise<Array<{ sha: string; subject: string }>> {
+  if (!SHA.test(base) || !SHA.test(sha)) throw new Error("malformed sha");
+  const compare = await github(`${SECOND_REVIEW_REPOSITORY_PATH}/compare/${base}...${sha}`);
+  if (field(compare, "status") !== "ahead") throw new Error(`${sha.slice(0, 12)} is not ahead of ${base.slice(0, 12)}`);
+  const commits = Array.isArray(field(compare, "commits")) ? field(compare, "commits") as unknown[] : [];
+  if (field(compare, "total_commits") !== commits.length) throw new Error(`the compare lists ${commits.length} of ${String(field(compare, "total_commits"))} commits`);
+  const byId = new Map(commits.map((commit) => [field(commit, "sha"), commit]));
+  const line: Array<{ sha: string; subject: string }> = [];
+  for (let current = sha; current !== base;) {
+    const commit = byId.get(current);
+    if (!commit || line.length >= commits.length) throw new Error(`the first-parent line leaves base..${sha.slice(0, 12)} at ${current.slice(0, 12)}`);
+    const message = field(commit, "commit", "message");
+    line.unshift({ sha: current, subject: typeof message === "string" ? message.split("\n")[0].slice(0, 120) : "" });
+    const parent = parentShas(commit)[0];
+    if (typeof parent !== "string" || !SHA.test(parent)) throw new Error(`the first parent of ${current.slice(0, 12)} is unreadable`);
+    current = parent;
+  }
+  return line;
+}
+
+export async function planUpdateStage(
+  binding: UpdateBinding, github: GithubFetch, fits: (sha: string) => Promise<boolean>, maxMerges = SECOND_REVIEW_MAX_MERGES,
+): Promise<UpdateStaging> {
+  const target = binding.sha;
+  try {
+    const line = await updateFirstParentLine(binding.base, target, github);
+    if (line.length < 2) return { target, reason: "the update is a single commit on the first-parent line; it cannot be staged" };
+    const candidates = line.slice(0, Math.min(maxMerges, line.length - 1));
+    if (!await fits(candidates[0].sha)) return { target, reason: `even the first commit ${candidates[0].sha.slice(0, 12)} alone does not fit one complete review` };
+    let low = 0;
+    let high = candidates.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (await fits(candidates[middle].sha)) low = middle;
+      else high = middle - 1;
+    }
+    const chosen = candidates.slice(0, low + 1);
+    return { target, stage: { sha: chosen[low].sha, merges: chosen.length, of: line.length, subjects: chosen.map((item) => item.subject) } };
+  } catch (error) {
+    return { target, reason: (error instanceof Error ? error.message : "staging failed").slice(0, 300) };
+  }
+}
+
+// Whether the review material of one diff reaches the reviewer completely
+// (the measure of planUpdateStage): the same layout as the review.
+export function updateMaterialComplete(diff: UpdateDiff): boolean {
+  return buildUpdateReviewPasses([diff]).coverage.every((item) => item.incomplete.length === 0);
 }

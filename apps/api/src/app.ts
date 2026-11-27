@@ -81,12 +81,15 @@ import {
   githubApiFetch,
   normalizeUpdateBindings,
   parseUpdateDiff,
+  planUpdateStage,
   redactSecrets,
   reviewedDiffFor,
   runUpdateReviewPasses,
+  secondReviewCovers,
   summarizeUpdateReview,
   updateBindings,
   updateReviewEvidence,
+  updateMaterialComplete,
   updateReviewFindings,
   updateTargets as reviewedUpdateTargets,
   verifySecondReview,
@@ -2578,17 +2581,18 @@ export async function createApp(options: AppOptions = {}) {
   ): Promise<{ diffs: UpdateDiff[]; reviewPath: string | null; outcome: UpdateReviewOutcome }> {
     const diffs: UpdateDiff[] = [];
     const kind: UpdateKind = targets[0]?.kind ?? "self";
+    const fetchDiff = async (sha: string): Promise<UpdateDiff> => {
+      if (!config.executorBrokerSocket || !config.executorBrokerSecret) throw new Error("typed executor broker is not configured");
+      return parseUpdateDiff(await runExecutorAction(config.executorBrokerSocket, config.executorBrokerSecret, {
+        action: UPDATE_KINDS[kind].diffAction, target: sha, expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        envelopeDigest: hashCanonical({ jobId, purpose: UPDATE_KINDS[kind].evidencePrefix, sha }),
+      }, SELF_DIFF_EXECUTOR_TIMEOUT_MS), sha, kind);
+    };
     try {
       // One review covers one repository (one set of guarantees). A plan that
       // installs both is not reviewable as a whole and stops for the operator.
       if (targets.some((target) => target.kind !== kind)) throw new Error("the plan mixes self.update and dienste.update; install one repository per job");
-      if (!config.executorBrokerSocket || !config.executorBrokerSecret) throw new Error("typed executor broker is not configured");
-      for (const { sha } of targets) {
-        diffs.push(parseUpdateDiff(await runExecutorAction(config.executorBrokerSocket, config.executorBrokerSecret, {
-          action: UPDATE_KINDS[kind].diffAction, target: sha, expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
-          envelopeDigest: hashCanonical({ jobId, purpose: UPDATE_KINDS[kind].evidencePrefix, sha }),
-        }, SELF_DIFF_EXECUTOR_TIMEOUT_MS), sha, kind));
-      }
+      for (const { sha } of targets) diffs.push(await fetchDiff(sha));
     } catch (error) {
       return { diffs: [], reviewPath: null, outcome: { kind, bindings: [], coverage: [], unavailable: error instanceof Error ? error.message : `${UPDATE_KINDS[kind].diffAction} failed` } };
     }
@@ -2598,6 +2602,16 @@ export async function createApp(options: AppOptions = {}) {
       : prompts.map((prompt, index) => `<!-- review pass ${index + 1}/${prompts.length} -->\n${prompt}`).join("\n\n");
     await writeFile(reviewPath, record, { encoding: "utf-8", mode: 0o600 });
     const outcome: UpdateReviewOutcome = { kind, bindings: updateBindings(diffs), coverage };
+    // Too large for one complete review (card t_1606261a): without a second
+    // review that covers it, the Cockpit measures the next stage and does not
+    // ask the reviewer about a part; the agent installs the stage first.
+    if (kind === "self" && diffs.length === 1 && coverage.some((item) => item.incomplete.length > 0)) {
+      outcome.secondReview = [await verifySecondReview(outcome.bindings[0], githubFetch)];
+      if (!secondReviewCovers(outcome)) {
+        outcome.staging = await planUpdateStage(outcome.bindings[0], githubFetch, async (sha) => updateMaterialComplete(await fetchDiff(sha)));
+        if (outcome.staging.stage) return { diffs, reviewPath, outcome };
+      }
+    }
     reviewPassEngines.set(jobId, []);
     try {
       Object.assign(outcome, await runUpdateReviewPasses(prompts, (prompt) => updateReviewRunner(prompt, jobId)));
@@ -2609,7 +2623,7 @@ export async function createApp(options: AppOptions = {}) {
     }
     // A self-update review that would stop looks for a second review of
     // exactly these commits, which the Cockpit verifies itself (4b).
-    if (kind === "self" && updateReviewFindings(outcome).result !== "pass") {
+    if (kind === "self" && !outcome.secondReview && updateReviewFindings(outcome).result !== "pass") {
       outcome.secondReview = [];
       for (const binding of outcome.bindings) outcome.secondReview.push(await verifySecondReview(binding, githubFetch));
     }
