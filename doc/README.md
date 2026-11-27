@@ -11,7 +11,7 @@ This repository uses `/doc` as the implementation planning hub.
 - `setup/vps-handover.md` - VPS-local bring-up instructions, deployment files, and Copilot handover prompt
 - `setup/borg-retention.md` - the backup cleanup service on Lab0 (prune + compact, fixed bounds set in the cockpit, foreign deletions halt it until Jochen approves)
 - `setup/wartet-auf-dich.md` - the start page after login: everything Jochen must decide as phone-friendly cards (approve/reject with a mandatory reason, countdown to envelope expiry, "re-order" once expired), everything else behind "Mehr"; James forwards the direct link via Telegram
-- `setup/telegram-freigabe.md` - Jochens Ja per Telegram for class A on box (throwaway guests and ports only inside the workshop network vmbr1): the Cockpit's own bot offers the stopped run, his tap approves exactly that plan once; everything else stays the Cockpit click
+- `setup/telegram-freigabe.md` - Jochens Ja per Telegram for class A on box (throwaway guests and ports only inside the workshop network vmbr1): the Cockpit's own bot offers the stopped run, his tap approves exactly that plan once; on VPS and Lab0 the same for a stopped self-update with a verified Opus second review whose findings are all quoted from the reviewed diff (never G6, G10, injection); everything else stays the Cockpit click
 - `setup/host-run.md` - the general host door: shell steps as root behind lock (signed envelope), doorkeeper (isolated reviewer) and safety net (borg + machine snapshot) — per instance role vps, lab0 or box
 - `setup/box-bootstrap.md` - instance box (Proxmox host): first install through the signed one-time door, planner key encrypted to the box certificate, James' bearer from a hash
 

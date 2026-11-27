@@ -1657,10 +1657,11 @@ export async function createApp(options: AppOptions = {}) {
 
   app.processDueScheduledRunbooks = processDueScheduledRunbooks;
 
-  // Jochens Ja per Telegram für Klasse A (card t_1e9bc441): only on box, only
-  // when telegram.env switched it on completely; otherwise nothing runs and the
-  // Cockpit click is the only way, as before.
-  const telegramApproval = config.telegramApproval && config.instanceRole === "box"
+  // Jochens Ja per Telegram für Klasse A (card t_1e9bc441): workshop runs on
+  // box, reviewed self-updates on VPS and Lab0 (card t_efc1d03e); only with a
+  // known instance role and only when telegram.env switched it on completely;
+  // otherwise nothing runs and the Cockpit click is the only way, as before.
+  const telegramApproval = config.telegramApproval && config.instanceRole
     ? createTelegramApproval({
       settings: config.telegramApproval,
       role: config.instanceRole,
@@ -2630,7 +2631,8 @@ export async function createApp(options: AppOptions = {}) {
 
   // Wartet ein Job auf Jochen, bekommt James den Direktlink auf die Karte mit
   // und schickt ihn per Telegram weiter (das Cockpit selbst schickt nur das
-  // Klasse-A-Angebot der Box, telegram-approval.ts).
+  // Klasse-A-Angebot: Werkstatt auf der Box, geprüfte Selbstupdates auf VPS
+  // und Lab0, telegram-approval.ts).
   // Hat das Cockpit Jochen die Freigabe per Telegram angeboten (Klasse A),
   // steht das mit am Job: James muss den Link dann nicht noch einmal schicken.
   function withOperatorLink(job: JobRecord): JobRecord & { operatorLink?: string; telegramOffer?: Record<string, unknown> } {
@@ -2953,9 +2955,12 @@ export async function createApp(options: AppOptions = {}) {
         };
       }
       // The review of the new code decides only here, after every plan check:
-      // a stop turns an allowed plan into an operator decision.
-      if (updateReview) policy = applyUpdateReviewPolicy(policy, updateReview.outcome);
+      // a stop turns an allowed plan into an operator decision. Whether the
+      // plan itself would have run is kept for the Telegram tap (card
+      // t_efc1d03e): only a stop of this review alone may be offered there.
       const reviewSummary = (reviewRecord as { updateReview?: Record<string, unknown> }).updateReview;
+      if (reviewSummary) reviewSummary.planAllowed = policy.allowed;
+      if (updateReview) policy = applyUpdateReviewPolicy(policy, updateReview.outcome);
       if (updateReview && reviewSummary?.reported === true) {
         database.createAudit({ actorId: actor.id, action: "hermes.update_review.reported", targetType: "job", targetId: job.id, details: {
           result: reviewSummary.result, secondReview: updateReview.outcome.secondReview ?? [],

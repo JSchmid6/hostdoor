@@ -1,6 +1,7 @@
-# Jochens Ja per Telegram für Klasse A (Box)
+# Jochens Ja per Telegram für Klasse A (Box; Selbstupdates auf VPS und Lab0)
 
-Stand 26.11.2026, Karte t_1e9bc441. Code: `apps/api/src/telegram-approval.ts`, Klasse-A-Frage des
+Stand 26.11.2026, Karte t_1e9bc441; Selbstupdates seit 27.11.2026, Karte t_efc1d03e (Abschnitt
+„Klasse A für Selbstupdates“). Code: `apps/api/src/telegram-approval.ts`, Klasse-A-Frage des
 Türstehers in `apps/api/src/host-run.ts` (`HOST_RUN_CLASS_A`), gemeinsame Entscheidung mit der
 Freigabe-Route in `apps/api/src/app.ts` (`decideChange`). Tests: `apps/api/test/telegram-approval.test.ts`.
 
@@ -21,7 +22,8 @@ anderen Gast, den Box-Host nicht (keine Firewall-Regel, kein Paket, keine Unit, 
 Rechte, kein Speicher), keine Cockpit-Datei, kein Geheimnis und keinen Tresor-Wert, keine Backups
 oder Snapshots (außer neuen) und keine Produktiv- oder Familiendaten.
 
-Nicht Klasse A, also weiter Cockpit-Klick: alles auf VPS und Lab0, Änderungen am Box-Host (auch eine
+Nicht Klasse A, also weiter Cockpit-Klick: alles auf VPS und Lab0 außer geprüften Selbstupdates
+(Abschnitt unten), Änderungen am Box-Host (auch eine
 DNAT- oder Firewall-Regel auf `wg0`), Backups löschen, prune oder compact, Rechte, Geheimnisse und
 Netze außerhalb von `vmbr1`. Der Port auf `wg0` aus t_46caf5c5 (Job c3d239b5) fällt deshalb **nicht**
 unter Klasse A: Er ist eine Host-Regel mit einem Weg ins WG-Netz.
@@ -113,7 +115,64 @@ URL, denn in ihr steckt der Token.
 
 Ablehnen geht weiter im Cockpit (der Link steht in der Nachricht) oder durch Verfallenlassen.
 
+## Klasse A für Selbstupdates (VPS und Lab0)
+
+Entscheidung Jochen 26.11.2026 (auf die Frage, ob Klasse A auch für Selbstupdates auf VPS und Lab0
+gelten soll: „Was glaubst du was ich will“, gelesen als Ja im engsten Umfang; „Ich will nur
+freigegeben was ich wirklich muss“). Karte t_efc1d03e, Analyse t_c5858d13 Abschnitt 6c.
+
+Anlass: Ein Selbstupdate, dessen PR die Opus-Zweitprüfung trägt, stoppt trotzdem für Jochen, wenn die
+Prüfung vor der Installation einen belegten schweren Rechte-Befund (G1, G2, G4) meldet
+(Schweregrad-Schnitt, `self-update.md`, „Second review“). Das ist meist genau die Änderung, zu der
+Jochen schon Ja gesagt hat (PR #128: „neuer Freigabeweg“). Bisher hieß das ein Cockpit-Klick je
+Instanz.
+
+Auf VPS und Lab0 bietet das Cockpit einen solchen Job über seinen eigenen Bot an, wenn **jede** dieser
+Bedingungen gilt (`selfUpdateEligibility`, alles gespeicherte Fakten, die das Cockpit selbst
+geschrieben hat; fehlt eine, passiert nichts):
+
+- Instanzrolle `vps` oder `lab0`. Auf der Box bleibt das Selbstupdate beim Klick (Box-Host).
+- Job `hermes-change` in `blocked_user_approval`, Policy-Status ebenso; Capabilities genau
+  `["self.update"]`, kein Host-Lauf, kein Capability-Manifest, kein Breaker. Envelope gültig, nicht
+  abgelaufen, noch nicht freigegeben.
+- Der Plan wäre ohne die Prüfung gelaufen (`updateReview.planAllowed`, gesetzt in `app.ts` vor
+  `applyUpdateReviewPolicy`). Die Plan-Sicherheitsprüfung lautet `passed`, ohne Filter-Stopp. Damit
+  bleiben Plan-Policy, nicht erlaubte Capability, `shell.exception` und Ähnliches beim Klick.
+- Die Prüfung vor der Installation ist vollständig (keine Lücke, kein `UNVERIFIABLE`, kein
+  Prüferfehler, alles gesehen) und endet mit Befund, nicht als Meldung.
+- Für **jeden** installierten Commit hat das Cockpit selbst auf GitHub belegt (`verifySecondReview`,
+  `secondReviewCovers`): Merge eines PR nach `main` des Repos mit der festen Repo-ID, Baum gleich dem
+  geprüften Head, Marker `Cockpit-Zweitpruefung: FREIGABE <head-sha> opus` für genau diesen Head von
+  einem Konto mit Schreibrecht. Ein anderer Head, ein fehlender Marker, ein Marker eines anderen
+  Modells, ein Fremdkonto oder ein anderes Repo: kein Angebot.
+- Jeder Befund nennt eine Garantie und sein zitierter Code steht im geprüften Diff
+  (`quoteFound`). Keiner nennt G6 (Geheimnisse) oder G10 (Backups), keiner ist `INJECTION`.
+- Jeder installierte Diff (Basis, Commit, Diff-Hash) ist an den signierten Envelope gebunden.
+
+Text, Knopf, Prüfung des Tipps, Bindung, 30-min-Fenster, einmalige Verwendung, Abweisungen und
+Protokoll sind dieselben wie oben. Das Angebot nennt Stand und PR der Zweitprüfung und jeden Befund
+(Garantie, Schwere, Titel, Datei); Freitext aus dem Job geht geschwärzt hinaus (`redactSecrets`, G6).
+Am Job steht `output.approval.via.scope: "self-update"`.
+
+Bleibt beim Klick: Backups (G10), Geheimnisse (G6), `INJECTION`, unvollständige Prüfung, Befunde,
+deren Zitat nicht im Diff steht, alles, was schon die Plan-Policy stoppt, Host-Läufe auf VPS und Lab0
+(auch X2 außerhalb geprüfter Selbstupdates) und alles auf dem Box-Host. Ein Ja im Chat an James ist
+nie eine Freigabe: Das Cockpit liest nur Knopfdrücke seines eigenen Bots.
+
+**Ein Knopf je Instanz, nicht einer für alle drei.** Jede Instanz hat ihren eigenen Bot und gibt nur
+ihre eigenen Jobs frei. Ein gemeinsamer Bot geht nicht: Telegram liefert jeden Knopfdruck nur an
+einen Abholer (`getUpdates`), und eine Instanz, die für eine andere freigibt, bräuchte Vertrauen
+zwischen den Instanzen, das es absichtlich nicht gibt (Lab0 vertraut dem VPS nicht, der borg-Schlüssel
+des VPS ist dort nur append-only). Jochen tippt also bei einem Selbstupdate auf VPS und Lab0 je
+einmal im Chat des jeweiligen Bots, statt sich je Instanz im Cockpit anzumelden und zu klicken.
+
+Einführung: Das Selbstupdate, das diese Regel bringt, prüft noch die alte Fassung; es stoppt deshalb
+für den Klick (eine neue Regel kann ihre eigene Einführung nicht freigeben).
+
 ## Einrichten (einmalig, nur Jochen)
+
+Je Instanz ein eigener Bot (Box, VPS, Lab0), also die Schritte je Instanz, auf dem jeweiligen Host.
+
 
 1. In Telegram bei @BotFather `/newbot` aufrufen, etwa „Cockpit Box“, und den Token notieren. Den
    Token nicht an James geben.
@@ -132,7 +191,9 @@ Ablehnen geht weiter im Cockpit (der Link steht in der Nachricht) oder durch Ver
 4. Nachweis: `GET /api/health` → `security.telegramApproval: true`.
 
 Fehlt eine Angabe oder hat sie eine falsche Form (Schalter nicht `on`, Token nicht im Format der
-Bot-API, Nutzer-ID nicht numerisch), ist die Freigabe aus. Ebenso auf jeder Instanz außer der Box.
+Bot-API, Nutzer-ID nicht numerisch), ist die Freigabe aus. Ebenso ohne bekannte Instanzrolle
+(`instance-role.env`). Auf der Box gilt nur die Werkstatt-Klasse, auf VPS und Lab0 nur die
+Selbstupdate-Klasse.
 
 ## Schalter und Rückweg
 
@@ -155,3 +216,8 @@ Bot-API, Nutzer-ID nicht numerisch), ist die Freigabe aus. Ebenso auf jeder Inst
   `/etc/wireguard-ops-cockpit`. Ein Host-Lauf, der die Datei liest, ist ein X1-Befund des Türstehers.
 - Telegram selbst ist Vertrauensanker. Wer Jochens Telegram-Konto übernimmt, kann Klasse-A-Läufe
   freigeben, aber nichts darüber hinaus.
+- Selbstupdates (VPS, Lab0): Den Zweitprüfungs-Marker kann ein Agent mit dem Owner-Token selbst setzen
+  (Variante C, `self-update.md`). Der Marker ist deshalb nur die Bindung an genau den geprüften Head,
+  kein zweiter Prinzipal. Die Freigabe bleibt Jochens eigener Tipp, nachdem er Stand, PR und jeden
+  Befund im Angebot gesehen hat. Was das Cockpit dabei nicht abnimmt, bleibt beim Klick (G6, G10,
+  `INJECTION`, Lücken, Zitate außerhalb des Diffs).

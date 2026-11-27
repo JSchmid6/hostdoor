@@ -368,7 +368,9 @@ describe("telegram approval for class A", () => {
     expect((await vps.submit()).status).toBe("blocked_user_approval");
     expect(vps.doorkeeperPrompts[0]).not.toContain("CLASS_A");
     await vps.tick();
-    expect(vps.telegram.calls).toHaveLength(0);
+    // On VPS and Lab0 only reviewed self-updates are offered (card t_efc1d03e), never a host run.
+    expect(vps.telegram.sent()).toHaveLength(0);
+    expect(vps.audits("hermes.change.telegram_offered")).toHaveLength(0);
 
     const off = await setup({ doorkeeper: x3("yes"), telegram: false });
     expect((await off.submit()).status).toBe("blocked_user_approval");
