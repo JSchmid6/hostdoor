@@ -774,6 +774,18 @@ noch startet), und die
 API — die mit dem Host neu gestartet ist — nimmt den Job aus seinem Datensatz wieder auf, folgt
 dem Lauf über `host.status` und meldet danach das Ergebnis samt Verifikation.
 
+### Firewall-Checks des Planers (27.11.2026, Karte t_233832b1)
+
+Der Planer-Vertrag (`hostRunPlannerContract`) schreibt für Firewall-Checks vor: Das Vorhandensein
+einer Regel prüft `iptables [-t tabelle] -C <kette> <regel>` (Exit 0 = da, 1 = fehlt), die Regel so
+geschrieben wie im Schritt. Kein `iptables -S | grep -e '<Optionen>'`: `-S` gibt die Optionen in
+fester Reihenfolge aus (`-s -d -i -o -p …`), nicht in der getippten; ein grep auf eine Optionsfolge
+meldet eine richtige Regel als fehlend (Job c3d239b5, Karte t_46caf5c5: 2 von 3 Checks falsch rot,
+`failed_verification` trotz richtiger Regeln). Die Reihenfolge prüft man über `iptables -S <kette>`
+oder `-L <kette> --line-numbers`: jede Regel bekommt im Schritt eine eindeutige Kennung
+(`-m comment --comment <name>`), man sucht nach der Kennung und vergleicht die Zeilennummern.
+Der Test steht in `apps/api/test/host-run.test.ts` („hostRunPlannerContract“).
+
 ## 5. Sondertüren
 
 Die vorhandenen Sondertüren (Capability-Sandkasten mit WordPress-, Nextcloud-, DinD-,

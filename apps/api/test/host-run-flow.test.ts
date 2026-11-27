@@ -250,7 +250,7 @@ describe("host door through the API", () => {
       "== 2026-10-21T18:39:30.000Z check 1/1: nothing pending", "CHECK-PROOF php8.3-fpm 8.3.36",
       "== 2026-10-21T18:39:41.000Z run finished: success",
     ].join("\n").slice(-30000);
-    const intent = `Critical PHP security update on the VPS. ${"Zielzustand und W\u00e4chter ausf\u00fchrlich erkl\u00e4rt \u2013 ".repeat(250)}`;
+    const intent = `Critical PHP security update on the VPS. ${"Zielzustand und W\u00e4chter ausf\u00fchrlich erkl\u00e4rt \u2013 ".repeat(230)}`;
     const flow = await setup({ plan: planWith(hostRun), doorkeeper: "VERDICT: pass", intent, logTail: log });
     const job = await flow.submit();
 
@@ -282,7 +282,7 @@ describe("host door through the API", () => {
     const script = (label: string) => `cat > /etc/php/8.3/fpm/conf.d/90-${label}.ini <<'EOF'\n${Array.from({ length: 300 }, (_, index) => `; ${label} setting ${index} ......................`).join("\n")}\nEOF`;
     const bigRun = { ...hostRun, steps: [...hostRun.steps, ...["a", "b", "c", "d", "e"].map((label) => ({ name: `config ${label}`, run: script(label) }))] };
     const plan = planWith(bigRun);
-    const intent = `Critical PHP security update on the VPS. ${"Zielzustand und W\u00e4chter ausf\u00fchrlich erkl\u00e4rt \u2013 ".repeat(250)}`;
+    const intent = `Critical PHP security update on the VPS. ${"Zielzustand und W\u00e4chter ausf\u00fchrlich erkl\u00e4rt \u2013 ".repeat(230)}`;
     // Within the door's own bounds: the helper's 30,000-character digest and
     // the doorkeeper's 90,000 bytes of steps and checks.
     expect(log.length).toBeLessThanOrEqual(30000);

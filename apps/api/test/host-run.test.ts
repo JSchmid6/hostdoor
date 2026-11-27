@@ -463,6 +463,16 @@ describe("hostRunPlannerContract", () => {
     expect(contract).toContain("the last successful borg backup must be at most 30 h old");
     expect(contract).toContain("checks are mandatory");
   });
+
+  // Job c3d239b5 (t_46caf5c5, 26.11.2026): `iptables -S | grep -e '-i wg0 -s ...'`
+  // failed twice although the rules were right (-S prints -s -d -i -o -p).
+  it("tells the planner to check firewall rules with -C and to find order by a marker, not by option sequence", () => {
+    const contract = hostRunPlannerContract();
+    expect(contract).toContain("iptables [-t table] -C <chain> <rule>");
+    expect(contract).toContain("-m comment --comment <name>");
+    expect(contract).toContain("--line-numbers");
+    expect(contract).toContain("Never match on an option sequence");
+  });
 });
 
 // Vorfall 10./13.10.2026 (Jobs 611ad26d, 83434c34): the planner's one-line copy
