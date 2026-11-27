@@ -6,6 +6,18 @@ import type { TelegramApprovalSettings } from "./config.js";
 import type { CockpitDatabase, TelegramOffer } from "./db.js";
 import { hashCanonical, type ExecutionEnvelope } from "./hermes-security.js";
 import type { HostRunManifest, InstanceRole } from "./host-run.js";
+import {
+  normalizeUpdateBindings,
+  redactSecrets,
+  reviewedDiffFor,
+  secondReviewCovers,
+  secondReviewStops,
+  updateReviewFindings,
+  type SecondReviewCheck,
+  type UpdateReviewCoverage,
+  type UpdateReviewFinding,
+  type UpdateReviewOutcome,
+} from "./update-review.js";
 
 // Jochens Ja per Telegram für Klasse A (card t_1e9bc441, doc/setup/telegram-freigabe.md).
 //
@@ -32,6 +44,14 @@ import type { HostRunManifest, InstanceRole } from "./host-run.js";
 //   window      30 minutes from the offer, never beyond the envelope's own
 //               deadline; no re-signing after expiry on this way.
 //   fail closed anything missing → nothing happens; the Cockpit click stays.
+//
+// Second scope, only on VPS and Lab0 (card t_efc1d03e): a self-update that
+// stopped for the operator although the Cockpit itself verified on GitHub that
+// every installed commit is the merge of a pull request whose head carries an
+// Opus second review (secondReviewCovers). Its pre-install review stopped only
+// on evidenced findings whose quoted code is in the reviewed diff, never on
+// backups (G10), secrets (G6), an INJECTION or a gap (selfUpdateEligibility).
+// Source, binding, window and fail-closed are the same as above.
 
 export const TELEGRAM_WINDOW_MINUTES = 30;
 // Findings the doorkeeper may raise on a class-A run (exposure inside vmbr1).
@@ -75,6 +95,9 @@ export interface ClassAEligibility {
   eligible: boolean;
   reasons: string[];
   why: string;
+  // werkstatt: a host run on box (classAEligibility); self-update: a reviewed
+  // self-update on VPS or Lab0 (selfUpdateEligibility).
+  scope?: "werkstatt" | "self-update";
 }
 
 // Whether this job may be offered for (and approved by) a tap in Telegram.
@@ -124,7 +147,112 @@ export function classAEligibility(job: JobRecord | null, role: InstanceRole | nu
   }
   const classA = record(details.classA);
   if (classA.value !== "yes") no("the doorkeeper did not judge it class A");
-  return { eligible: reasons.length === 0, reasons, why: typeof classA.why === "string" ? classA.why : "" };
+  return { eligible: reasons.length === 0, reasons, why: typeof classA.why === "string" ? classA.why : "", scope: "werkstatt" };
+}
+
+// Roles where a reviewed self-update may be approved by a tap. The box host
+// stays with the Cockpit click (card t_efc1d03e).
+const SELF_UPDATE_ROLES = new Set<InstanceRole>(["vps", "lab0"]);
+// Guarantees whose finding always stays with the Cockpit click: secrets (G6)
+// and backups and declared risk (G10).
+const SELF_UPDATE_CLICK_GUARANTEES = new Set([6, 10]);
+
+// The pre-install review as the job stored it (summarizeUpdateReview), read
+// back into the outcome the review functions judge. The Cockpit wrote it; the
+// requester has no route to change a job's output.
+function storedUpdateOutcome(stored: Record<string, unknown>): UpdateReviewOutcome | null {
+  const bindings = normalizeUpdateBindings(stored.bindings);
+  if (!Array.isArray(stored.bindings) || bindings.length === 0 || bindings.length !== stored.bindings.length) return null;
+  if (!Array.isArray(stored.coverage) || !Array.isArray(stored.findings) || !Array.isArray(stored.secondReview)) return null;
+  const verdict = stored.verdict;
+  if (verdict !== "approve" && verdict !== "flag" && verdict !== "invalid") return null;
+  return {
+    kind: "self",
+    bindings,
+    coverage: stored.coverage as UpdateReviewCoverage[],
+    unavailable: typeof stored.unavailable === "string" ? stored.unavailable : null,
+    reviewerError: typeof stored.reviewerError === "string" ? stored.reviewerError : null,
+    answer: { verdict, findings: stored.findings as UpdateReviewFinding[], notes: "", problem: typeof stored.problem === "string" ? stored.problem : null },
+    secondReview: stored.secondReview as SecondReviewCheck[],
+  };
+}
+
+function findingGuarantees(finding: UpdateReviewFinding): number[] {
+  return [...String(finding.guarantee).matchAll(/\bG(\d+)\b/g)].map((match) => Number(match[1]));
+}
+
+// Whether a stopped self-update on VPS or Lab0 may be offered for (and
+// approved by) a tap in Telegram (card t_efc1d03e). Every condition is a stored
+// fact the Cockpit wrote itself; any missing fact is a reason against.
+export function selfUpdateEligibility(job: JobRecord | null, role: InstanceRole | null | undefined, now = Date.now()): ClassAEligibility {
+  const reasons: string[] = [];
+  const no = (reason: string) => { reasons.push(reason); };
+  if (!role || !SELF_UPDATE_ROLES.has(role)) no("instance role is not vps or lab0");
+  if (!job) return { eligible: false, reasons: [...reasons, "job not found"], why: "", scope: "self-update" };
+  if (job.subjectId !== "hermes-change") no("not a change job");
+  if (job.status !== "blocked_user_approval") no(`status ${job.status}, not blocked_user_approval`);
+  const output = record(job.output);
+  if (output.hostRun) no("a run of the host door");
+  if (output.manifest) no("carries a capability manifest");
+  if (output.breaker) no("held by the circuit breaker");
+  if (JSON.stringify(output.capabilities) !== JSON.stringify(["self.update"])) no("capabilities are not exactly self.update");
+  const envelope = output.envelope as ExecutionEnvelope | undefined;
+  if (!envelope || typeof envelope !== "object") no("no execution envelope");
+  else {
+    if (envelope.operatorApproved) no("already approved");
+    if (!(Date.parse(envelope.expiresAt) > now)) no("execution envelope expired");
+  }
+  if (record(output.policy).status !== "blocked_user_approval") no("policy did not ask the operator");
+  const safety = record(output.safety);
+  if (safety.verdict !== "passed") no(`plan safety review ${String(safety.verdict)}`);
+  if (Number(record(safety.details).safetyStops ?? 0) !== 0) no("plan safety review stopped by the safety classifier");
+  const stored = record(output.updateReview);
+  // The plan itself would have run; only the pre-install review stopped it.
+  if (stored.planAllowed !== true) no("the plan was stopped before the pre-install review");
+  if (stored.kind !== "self") no("not a self-update review");
+  if (stored.result !== "finding") no(`pre-install review ${String(stored.result ?? "missing")}`);
+  if (stored.reported === true) no("the review was reported, nothing to approve");
+  const outcome = storedUpdateOutcome(stored);
+  let why = "";
+  if (!outcome) no("pre-install review record unreadable");
+  else {
+    if (outcome.answer?.verdict !== "flag") no("the reviewer did not flag");
+    if (updateReviewFindings(outcome).gaps.length > 0) no("pre-install review incomplete");
+    if (!secondReviewCovers(outcome)) no("no verified second review for every installed commit");
+    if (secondReviewStops(outcome).length === 0) no("no finding that the second review leaves with the operator");
+    for (const finding of outcome.answer?.findings ?? []) {
+      const name = String(finding.title || "(untitled)").slice(0, 80);
+      const guarantees = findingGuarantees(finding);
+      if (/^UNVERIFIABLE\b/.test(String(finding.guarantee))) no(`unverifiable point: ${name}`);
+      else if (/\bINJECTION\b/.test(String(finding.guarantee))) no(`injection: ${name}`);
+      else if (guarantees.length === 0) no(`finding names no guarantee: ${name}`);
+      else if (guarantees.some((number) => SELF_UPDATE_CLICK_GUARANTEES.has(number))) no(`finding on G${guarantees.join("/G")} stays with the click: ${name}`);
+      if (finding.quoteFound !== true) no(`quoted code not found in the reviewed diff: ${name}`);
+    }
+    // Every installed commit is bound to the signed envelope (base, sha, diff hash).
+    if (envelope && typeof envelope === "object") {
+      for (const binding of outcome.bindings) {
+        try {
+          if (!reviewedDiffFor(binding.sha, envelope, outcome.bindings)) no(`no reviewed diff bound for ${binding.sha.slice(0, 12)}`);
+        } catch (error) {
+          no(error instanceof Error ? error.message : "reviewed diff binding broken");
+        }
+      }
+    }
+    const checks = outcome.secondReview ?? [];
+    why = outcome.bindings.map((binding) => {
+      const check = checks.find((item) => item.sha === binding.sha && item.verified);
+      const prs = check?.prs ?? (check?.pr !== undefined ? [check.pr] : []);
+      return `${binding.sha.slice(0, 12)}: ${prs.map((pr) => `#${pr}`).join(", ") || "?"}, Head ${String(check?.headSha ?? "?").slice(0, 12)}`;
+    }).join("; ");
+  }
+  return { eligible: reasons.length === 0, reasons, why, scope: "self-update" };
+}
+
+// The scope of the tap depends on the instance: workshop runs on box,
+// reviewed self-updates on VPS and Lab0.
+export function eligibilityFor(job: JobRecord | null, role: InstanceRole | null | undefined, now = Date.now()): ClassAEligibility {
+  return role === "box" ? classAEligibility(job, role, now) : selfUpdateEligibility(job, role, now);
 }
 
 // The reviewed content the tap approves: the envelope without its signature
@@ -139,8 +267,9 @@ export function offerBinding(job: JobRecord): string | null {
   });
 }
 
+// Free text from the job (James, the planner, a reviewer) goes out redacted (G6).
 function clipText(value: unknown, limit: number): string {
-  const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  const text = typeof value === "string" ? redactSecrets(value).replace(/\s+/g, " ").trim() : "";
   return text.length > limit ? `${text.slice(0, limit)} …` : text;
 }
 
@@ -150,7 +279,8 @@ function berlin(iso: string): string {
 
 // The offer as the Cockpit writes it: from the job's own record, plain text
 // (no parse mode), never text the requester could format.
-export function offerText(job: JobRecord, eligibility: ClassAEligibility, expiresAt: string, link: string): string {
+export function offerText(job: JobRecord, eligibility: ClassAEligibility, expiresAt: string, link: string, role?: InstanceRole | null): string {
+  if (eligibility.scope === "self-update") return selfUpdateOfferText(job, eligibility, expiresAt, link, role);
   const output = record(job.output);
   const hostRun = record(output.hostRun);
   const request = record(output.request);
@@ -170,6 +300,30 @@ export function offerText(job: JobRecord, eligibility: ClassAEligibility, expire
     `Gültig bis: ${berlin(expiresAt)}`,
     "",
     "„Freigeben“ gibt genau diesen geprüften Plan frei, einmal. Ablehnen oder genauer ansehen im Cockpit:",
+    link,
+  ].join("\n").slice(0, 3900);
+}
+
+// The offer for a reviewed self-update (VPS, Lab0): what is installed, the
+// second review the Cockpit verified, and every finding of its own review.
+function selfUpdateOfferText(job: JobRecord, eligibility: ClassAEligibility, expiresAt: string, link: string, role?: InstanceRole | null): string {
+  const output = record(job.output);
+  const request = record(output.request);
+  const explanation = record(output.explanation);
+  const stored = record(output.updateReview);
+  const findings = Array.isArray(stored.findings) ? stored.findings.map(record) : [];
+  return [
+    `Cockpit ${role ?? "?"}: Freigabe Selbstupdate (Klasse A)`,
+    `Job: ${job.id}`,
+    `Vorgang (Angabe James): ${clipText(request.operation, 80) || "–"}`,
+    `Absicht (Angabe James): ${clipText(explanation.intent ?? request.intent, 400)}`,
+    `Stand und Zweitprüfung (vom Cockpit auf GitHub geprüft): ${clipText(eligibility.why, 400)}`,
+    "Befunde der Prüfung vor der Installation (Zitat im geprüften Diff gefunden):",
+    ...findings.slice(0, 10).map((finding) => `- [${clipText(finding.guarantee, 40)}, ${clipText(finding.severity, 20) || "?"}] ${clipText(finding.title, 160)} (${clipText(finding.file, 120)})`),
+    `Prüfsumme: ${(offerBinding(job) ?? "").slice(0, 12)}`,
+    `Gültig bis: ${berlin(expiresAt)}`,
+    "",
+    "„Freigeben“ installiert genau diesen geprüften Stand auf dieser Instanz, einmal. Ablehnen oder genauer ansehen im Cockpit:",
     link,
   ].join("\n").slice(0, 3900);
 }
@@ -210,7 +364,7 @@ export function createTelegramApproval(deps: TelegramApprovalDeps) {
     for (const job of deps.database.listJobsByStatus("hermes-change", "blocked_user_approval")) {
       if (deps.database.getTelegramOfferForJob(job.id)) continue;
       if ((retryAfter.get(job.id) ?? 0) > now()) continue;
-      const eligibility = classAEligibility(job, deps.role, now());
+      const eligibility = eligibilityFor(job, deps.role, now());
       if (!eligibility.eligible) continue;
       if (deps.envelopeErrors(job).length > 0) continue;
       const binding = offerBinding(job);
@@ -221,7 +375,7 @@ export function createTelegramApproval(deps: TelegramApprovalDeps) {
       try {
         const sent = record(await deps.call("sendMessage", {
           chat_id: deps.settings.operatorId,
-          text: offerText(job, eligibility, expiresAt, deps.link(job.id)),
+          text: offerText(job, eligibility, expiresAt, deps.link(job.id), deps.role),
           link_preview_options: { is_disabled: true },
           reply_markup: { inline_keyboard: [[{ text: "✅ Freigeben", callback_data: `ja:${nonce}` }]] },
         }));
@@ -229,7 +383,7 @@ export function createTelegramApproval(deps: TelegramApprovalDeps) {
         const chatId = String(record(sent.chat).id ?? "");
         if (!Number.isSafeInteger(messageId) || chatId !== deps.settings.operatorId || typeof sent.text !== "string") throw new Error("telegram sendMessage: unexpected answer");
         deps.database.createTelegramOffer({ jobId: job.id, nonceHash: sha256(nonce), binding, chatId, messageId: messageId as number, textHash: sha256(sent.text), expiresAt });
-        audit("hermes.change.telegram_offered", job.id, { messageId, chatId, expiresAt, binding: binding.slice(0, 16), classA: eligibility.why.slice(0, 300) });
+        audit("hermes.change.telegram_offered", job.id, { messageId, chatId, expiresAt, binding: binding.slice(0, 16), scope: eligibility.scope, classA: eligibility.why.slice(0, 300) });
       } catch (error) {
         retryAfter.set(job.id, now() + OFFER_RETRY_MS);
         log(`telegram-approval: offer for job ${job.id} not sent: ${error instanceof Error ? error.message : "error"}`);
@@ -264,14 +418,15 @@ export function createTelegramApproval(deps: TelegramApprovalDeps) {
     if (offer.usedAt) return refuse(callback, "already used", offer);
     if (now() > Date.parse(offer.expiresAt)) return refuse(callback, "window expired", offer);
     const job = deps.database.getJob(offer.jobId);
-    const eligibility = classAEligibility(job, deps.role, now());
+    const eligibility = eligibilityFor(job, deps.role, now());
     if (!job || !eligibility.eligible) return refuse(callback, `no longer class A (${eligibility.reasons.join("; ").slice(0, 200)})`, offer);
     const envelopeErrors = deps.envelopeErrors(job);
     if (envelopeErrors.length) return refuse(callback, `envelope: ${envelopeErrors.join("; ")}`, offer);
     if (offerBinding(job) !== offer.binding) return refuse(callback, "job changed since the offer", offer);
     if (!deps.database.useTelegramOffer(offer.id)) return refuse(callback, "already used", offer);
-    const via = { channel: "telegram", fromId: deps.settings.operatorId, messageId: offer.messageId, offerId: offer.id, class: "A" };
-    const result = await deps.approve(job, `Telegram-Ja Klasse A (Nachricht ${offer.messageId})`, via);
+    const via = { channel: "telegram", fromId: deps.settings.operatorId, messageId: offer.messageId, offerId: offer.id, class: "A", scope: eligibility.scope };
+    const label = eligibility.scope === "self-update" ? "Klasse A Selbstupdate" : "Klasse A";
+    const result = await deps.approve(job, `Telegram-Ja ${label} (Nachricht ${offer.messageId})`, via);
     if (!result.ok) {
       audit("hermes.change.telegram_failed", job.id, { offerId: offer.id, messageId: offer.messageId, message: result.message.slice(0, 300) });
       await answer(callback, `Nicht gestartet: ${result.message}`);

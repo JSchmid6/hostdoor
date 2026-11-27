@@ -905,12 +905,15 @@ hebt. Der Normalfall ist Durchlaufen. Das gilt für beide Prüfungen: den Türst
   (Abschnitt 2, „Code aus geprüften Repos“, nur `host.run`); für die typisierten Türen die Plan-Policy (`evaluatePlanPolicy`: Risikozone rot, nicht autorisierte Capability, `shell.exception`, `borg.repair`).
 - Die Sicherungskette vor einem verändernden Lauf (borg-Prüfung, Snapshot) hängt nicht an dieser
   Matrix und bleibt unverändert.
-- Wo Jochen entscheidet (`blocked_user_approval`), entscheidet er im Cockpit. Einzige Ausnahme:
+- Wo Jochen entscheidet (`blocked_user_approval`), entscheidet er im Cockpit. Ausnahme:
   Klasse A auf der Box (seit 26.11.2026, Karte t_1e9bc441). Ein Lauf, der nur Wegwerf-Gäste oder Ports
   im Werkstatt-Netz `vmbr1` betrifft, nur X3-Befunde oder das Risiko `exposure` trägt und den der
   Türsteher mit `CLASS_A: yes` einordnet, darf Jochen auch per Tipp im Telegram-Chat des Cockpits
   freigeben. Es ist dieselbe Entscheidung über denselben Envelope, nur ein anderer Knopf
-  (`doc/setup/telegram-freigabe.md`). An der Matrix ändert das nichts.
+  (`doc/setup/telegram-freigabe.md`). An der Matrix ändert das nichts. Seit 27.11.2026 (Karte
+  t_efc1d03e) gilt derselbe Tipp auf VPS und Lab0 für ein gestopptes Selbstupdate, dessen Commits das
+  Cockpit selbst als Merge eines PR mit Opus-Zweitprüfung für genau diesen Head belegt hat und dessen
+  Prüfung nur auf belegten Befunden im geprüften Diff stoppte (nie G6, G10, `INJECTION`, Lücke).
 - **Zweitprüfung (Jochen, 07.11.2026, „ja alles“, Punkt 4b), nur Selbstupdate:** Prüft das Cockpit
   selbst über die GitHub-API, dass jeder zu installierende Commit genau der Merge eines PR nach
   `main` ist, dessen Head eine Opus-Zweitprüfung mit dem Marker

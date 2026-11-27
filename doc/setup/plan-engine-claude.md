@@ -185,7 +185,7 @@ CLI), gilt 0, also das alte Verhalten.
   NOTBETRIEB, statt dass der Job wartet. Eine Zeitüberschreitung des Türstehers ist dagegen „review
   incomplete“: Es läuft nichts.
 - Das Cockpit hat keinen Telegram-Weg für Meldungen (AGENTS.md, „Wartet auf dich“; der eigene Bot der
-  Box bietet nur Klasse-A-Freigaben an, `telegram-freigabe.md`): Hermes liest das Feld beim
+  Box, des VPS und von Lab0 bietet nur Klasse-A-Freigaben an, `telegram-freigabe.md`): Hermes liest das Feld beim
   Job-Ergebnis (Plugin cockpit) und meldet es Jochen.
 
 ## Einrichten
