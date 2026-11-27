@@ -467,9 +467,13 @@ taken again by another repository, the id cannot (card t_05754d79). Bounded,
    Cockpit-Zweitpruefung: FREIGABE <head sha, 40 lowercase hex> opus
    ```
 
-   The second review posts this line in the PR when it approves, naming the
-   head it reviewed. A later push changes the head, and the old marker no
-   longer counts. The line never goes into a commit message (the reviewer
+   Since 27.11.2026 (card t_a9c6823c) the Hermes plugin `zweitpruefung`
+   posts this line, not the card that built the change: its review card
+   names the head it reviewed (`Geprüfter Head: <sha>`) in its approval, and
+   the plugin comments only when that approval was written in a run of the
+   review card (not of the reviewed card), the sha is the PR's current head
+   and the review ran on Opus. An implementing card never posts the marker.
+   A later push changes the head, and the old marker no longer counts. The line never goes into a commit message (the reviewer
    would read it as an injection, see the cockpit skill).
 
 With that proof — and only for light findings, see the severity cut below — the
@@ -484,7 +488,9 @@ missing binding (`unavailable`), `dienste.update`, the safety review, the
 envelope binding of the reviewed hash and the runner's own checks are not
 touched. Honest limit: the marker is posted with the owner's token, the same
 the agent holds; it proves a review record for exactly this head, not a second
-principal. Spelled out (card t_e49f6254, 10.11.2026): the agent can write the
+principal. That the plugin, not the builder, posts it is order in the workflow,
+not a security boundary: any card holding the token can still post the line.
+The boundary stays here, in the head binding and the severity cut below. Spelled out (card t_e49f6254, 10.11.2026): the agent can write the
 marker line itself, without any second review having run, on every pull
 request it merged itself — and James merges directly. So for a self-update
 the agent can turn this review's `finding` or `incomplete` into a report and
