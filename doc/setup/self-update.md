@@ -371,6 +371,43 @@ Flow of a Hermes change job whose plan contains `self.update <sha>` lines:
    who cannot judge a hunk without more says so (`UNVERIFIABLE` of what it saw
    is a stop, never a pass).
 
+   **Staging** (27.11.2026, card t_1606261a): a host that lags weeks behind
+   (Lab0, box) brings an update no review can see completely — the runner caps
+   its excerpt at 200 KB, the review at 5 passes. Case: Lab0 48d19e8 → eb651d3
+   (job 9d556e05), 31 merges, ~975 KB of diff, `runnerTruncated`, 58 files
+   left out; every such update stopped as incomplete and with it every fix
+   behind it. Now, when the material of a plan's single `self.update` is
+   incomplete and no second review covers it (the proof is checked first, a
+   covered update keeps its report), the Cockpit measures the next stage
+   itself (`planUpdateStage`) and does **not** send the part to the reviewer:
+   1. the first-parent line `base..sha` from one GitHub compare of this
+      repository (by its id, like the second review; a compare that does not
+      list every commit, or a line that leaves it, is no line);
+   2. candidates are the first `SECOND_REVIEW_MAX_MERGES` = 8 commits on that
+      line, never the target itself — so a stage of reviewed merges can carry
+      the second review's proof;
+   3. each candidate is measured, not estimated: `self.diff <candidate>` (base =
+      the deployed commit, which is the base the stage will install on) laid out
+      exactly as the review lays it out (`updateMaterialComplete`); it fits only
+      when nothing the reviewer must see is missing (hunk splitting and passes
+      included). The farthest fitting candidate is found by bisection (at most
+      four `self.diff` calls); every answer comes from a measurement.
+
+   The result is a plan, never an install: the job stays `blocked_prerequisite`
+   (zone red, no approval offer), `output.updateReview.staging` holds the stage
+   (sha, merges of all, subjects), and `neededToContinue` says: submit a job
+   with only `self.update <stage>`, then the target again. Each stage is its own
+   job with its own complete review on the then installed (newer) code, and the
+   next review proposes the next stage if one is still needed. Decision: the
+   agent submits the stages, the Cockpit does not chain them itself — a chain
+   inside one job would install on a base the review of the next stage did not
+   see (every binding is `deployed..sha`) and would have to survive its own
+   restart; one stage per job keeps G7 exactly as it is. When not even the
+   first commit fits (one merge larger than the whole review), the line is one
+   commit, or GitHub or `self.diff` fail, staging records the reason
+   (`staging not possible: …`) and the review runs as before: an honest stop as
+   incomplete, a finding still reaches the operator.
+
    **Unchanged context of the backup bolt** (12.11.2026, card t_7ea8785f) is
    removed together with the bolt (13.11.2026, card t_abe2651b): the review sees
    the diff only.
@@ -407,7 +444,9 @@ Flow of a Hermes change job whose plan contains `self.update <sha>` lines:
      `UNVERIFIABLE` points (or no finding block at all) →
      `blocked_prerequisite`, zone red. Nothing is installed and nothing is
      offered for approval: this is a fault of the tool chain for the agent to
-     clear (fix the collection, retry), not a question for the operator. It
+     clear (fix the collection, retry; an update too large for one complete
+     review gets its next stage as the way on, see Staging above), not a
+     question for the operator. It
      even replaces a `blocked_user_approval` of the plan policy, because an
      unreviewed update is never offered for approval; only `blocked_policy`
      (no approval offer either) stays. Incomplete input
@@ -681,7 +720,12 @@ under the state directory — never a bare exit code.
 - `apps/api/test/update-review.test.ts` — prompt assembly, answer parser,
   coverage/truncation stop, policy, envelope binding, prompt cases, second
   review (every step of the GitHub proof refused on its own, report only with
-  the full proof, never for `dienste.update` or over a plan block).
+  the full proof, never for `dienste.update` or over a plan block), staging
+  (first-parent line, bisection within 8 merges, honest stop without a stage).
+- `apps/api/test/update-staging-app.test.ts` — staging through the Cockpit:
+  the next stage measured with `self.diff`, no reviewer call about a part, no
+  install, the stage in `neededToContinue`; without a fitting stage the review
+  runs as before.
 - `bash test/cockpit-self-update-e2e.sh` — disposable privileged container with
   real systemd: installs the module at its production paths, runs the update
   from a sandbox-mimicking transient unit (`ProtectSystem=true`,

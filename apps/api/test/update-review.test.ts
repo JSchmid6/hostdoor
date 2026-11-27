@@ -19,7 +19,10 @@ import {
   runUpdateReviewPasses,
   selfUpdateTargets,
   summarizeUpdateReview,
+  planUpdateStage,
   updateBindings,
+  updateFirstParentLine,
+  updateMaterialComplete,
   updateReviewEvidence,
   updateReviewFindings,
   updateTargets,
@@ -1277,3 +1280,119 @@ describe("second review: the pre-install review reports instead of stopping (4b)
   });
 });
 
+
+// Staging (card t_1606261a): a self-update too large for one complete review
+// gets its next stage measured by the Cockpit instead of a stop without a way on.
+describe("staging: a self-update too large for one complete review", () => {
+  const REPO = SECOND_REVIEW_REPOSITORY_PATH;
+  const at = (index: number) => `d${index.toString(16).padStart(39, "0")}`.slice(0, 40);
+  // A first-parent line of `length` merges on BASE (side commits included in
+  // the compare, as GitHub lists them), target = the last merge.
+  function line(length: number, overrides: Record<string, unknown> = {}): { target: string; github: GithubFetch; asked: string[] } {
+    const commits: unknown[] = [];
+    let parent = BASE;
+    for (let index = 1; index <= length; index += 1) {
+      const side = `e${index.toString(16).padStart(39, "0")}`.slice(0, 40);
+      commits.push({ sha: side, parents: [{ sha: parent }], commit: { message: `feat: side ${index}` } });
+      commits.push({ sha: at(index), parents: [{ sha: parent }, { sha: side }], commit: { message: `Merge pull request #${100 + index} from x/y\n\nbody` } });
+      parent = at(index);
+    }
+    const target = at(length);
+    const compare = { status: "ahead", total_commits: commits.length, commits, ...overrides };
+    const asked: string[] = [];
+    return {
+      target, asked,
+      github: async (apiPath) => {
+        asked.push(apiPath);
+        if (apiPath === `${REPO}/compare/${BASE}...${target}`) return compare;
+        throw new Error(`GET ${apiPath} answered 404`);
+      },
+    };
+  }
+  const binding = (target: string) => ({ base: BASE, sha: target, diffSha256: HASH });
+  // The material of base..sha fits when sha is at most `limit` merges along.
+  const fitsUpTo = (limit: number, measured: string[] = []) => async (sha: string) => {
+    measured.push(sha);
+    return parseInt(sha.slice(1), 16) <= limit;
+  };
+
+  it("reads the first-parent line base..target from one compare of the repository by its id", async () => {
+    const { target, github, asked } = line(3);
+    expect(await updateFirstParentLine(BASE, target, github)).toEqual([
+      { sha: at(1), subject: "Merge pull request #101 from x/y" },
+      { sha: at(2), subject: "Merge pull request #102 from x/y" },
+      { sha: at(3), subject: "Merge pull request #103 from x/y" },
+    ]);
+    expect(asked).toEqual([`${REPO}/compare/${BASE}...${target}`]);
+  });
+
+  it("refuses a line it cannot read completely", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ status: "diverged" }, "is not ahead"],
+      [{ total_commits: 300 }, "the compare lists 6 of 300 commits"],
+    ];
+    for (const [override, reason] of cases) {
+      const { target, github } = line(3, override);
+      await expect(updateFirstParentLine(BASE, target, github)).rejects.toThrow(reason);
+    }
+    const gap = line(3);
+    const broken: GithubFetch = async (apiPath) => {
+      const compare = await gap.github(apiPath) as { commits: Array<{ sha: string }> };
+      return { ...compare, commits: compare.commits.filter((commit) => commit.sha !== at(2)), total_commits: 5 };
+    };
+    await expect(updateFirstParentLine(BASE, gap.target, broken)).rejects.toThrow("the first-parent line leaves");
+  });
+
+  it("finds the farthest stage whose material is complete, within SECOND_REVIEW_MAX_MERGES and never the target", async () => {
+    const { target, github } = line(31);
+    const measured: string[] = [];
+    const staging = await planUpdateStage(binding(target), github, fitsUpTo(5, measured));
+    expect(staging).toMatchObject({ target, stage: { sha: at(5), merges: 5, of: 31 } });
+    expect(staging.stage?.subjects).toEqual([101, 102, 103, 104, 105].map((n) => `Merge pull request #${n} from x/y`));
+    // Bisection over the 8 candidates: the first, then at most three more.
+    expect(measured.length).toBeLessThanOrEqual(4);
+    expect(measured.every((sha) => parseInt(sha.slice(1), 16) <= SECOND_REVIEW_MAX_MERGES)).toBe(true);
+
+    expect((await planUpdateStage(binding(target), github, fitsUpTo(31))).stage).toMatchObject({ sha: at(SECOND_REVIEW_MAX_MERGES), merges: SECOND_REVIEW_MAX_MERGES });
+    const short = line(3);
+    expect((await planUpdateStage(binding(short.target), short.github, fitsUpTo(31))).stage).toMatchObject({ sha: at(2), merges: 2, of: 3 });
+  });
+
+  it("is an honest stop without a stage when even the first merge does not fit, the update is one commit, or anything fails", async () => {
+    const { target, github } = line(31);
+    expect(await planUpdateStage(binding(target), github, fitsUpTo(0))).toEqual({ target, reason: `even the first commit ${at(1).slice(0, 12)} alone does not fit one complete review` });
+    const single = line(1);
+    expect((await planUpdateStage(binding(single.target), single.github, fitsUpTo(31))).reason).toContain("single commit");
+    expect(await planUpdateStage(binding(target), github, async () => { throw new Error("self.diff timed out"); })).toEqual({ target, reason: "self.diff timed out" });
+    expect((await planUpdateStage(binding(target), async () => { throw new Error("GET x answered 403"); }, fitsUpTo(31))).reason).toBe("GET x answered 403");
+  });
+
+  it("measures with the review's own layout: a runner-truncated diff never fits", () => {
+    expect(updateMaterialComplete(diff())).toBe(true);
+    expect(updateMaterialComplete(diff({ partialFiles: ["apps/api/src/hermes-security.ts"], truncated: true }))).toBe(false);
+  });
+
+  it("stays blocked_prerequisite with the stage as the next step, never an approval offer and never ready", () => {
+    const stage = { sha: at(5), merges: 5, of: 31, subjects: ["Merge pull request #101 from x/y"] };
+    const staged = outcome({
+      coverage: [{ sha: SHA, incomplete: ["apps/api/src/app.ts"], cut: [], omitted: ["apps/api/src/app.ts"] }],
+      secondReview: [{ sha: SHA, verified: false, reason: "more than 8 commits" }],
+      staging: { target: SHA, stage },
+    });
+    const review = updateReviewFindings(staged);
+    expect(review.result).toBe("incomplete");
+    expect(review.gaps.join(" ")).toContain("too large for one complete review");
+    expect(review.gaps.join(" ")).not.toContain("produced no verdict");
+    expect(review.needed).toContain(`Stage the update: submit a job with only \`self.update ${at(5)}\` (5 of 31 merges, its review material measured complete). Once it is installed, submit \`self.update ${SHA}\` again; its review proposes the next stage if one is still needed.`);
+    expect(review.needed.some((line) => line.startsWith("Fix the collection"))).toBe(false);
+    const policy = applyUpdateReviewPolicy(readyPolicy, staged);
+    expect(policy).toMatchObject({ allowed: false, status: "blocked_prerequisite", zone: "red" });
+    expect(policy.neededToContinue.some((line) => line.startsWith("Stage the update"))).toBe(true);
+    expect(summarizeUpdateReview([diff()], staged, null)).toMatchObject({ result: "incomplete", staging: { target: SHA, stage } });
+
+    const unstaged = outcome({ coverage: staged.coverage, staging: { target: SHA, reason: "even the first commit x alone does not fit one complete review" } });
+    const honest = updateReviewFindings(unstaged);
+    expect(honest.needed.some((line) => line.startsWith("Fix the collection"))).toBe(true);
+    expect(honest.evidence).toContain("staging not possible: even the first commit x alone does not fit one complete review");
+  });
+});
