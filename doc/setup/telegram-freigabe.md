@@ -215,7 +215,10 @@ Selbstupdate-Klasse.
 - Wer root auf der Box hat, kann den Token lesen. Das ist dieselbe Grenze wie bei allen Dateien in
   `/etc/wireguard-ops-cockpit`. Ein Host-Lauf, der die Datei liest, ist ein X1-Befund des Türstehers.
 - Telegram selbst ist Vertrauensanker. Wer Jochens Telegram-Konto übernimmt, kann Klasse-A-Läufe
-  freigeben, aber nichts darüber hinaus.
+  freigeben, aber nichts darüber hinaus. Auf VPS und Lab0 heißt das auch: Wer zugleich einen Agenten
+  kontrolliert, der mergen und den Zweitprüfungs-Marker setzen kann (Owner-Token, Plugin
+  `zweitpruefung`), bekommt ein geprüftes Selbstupdate mit schwerem Rechte-Befund (G1, G2, G4)
+  installiert. Vorher hätte das zusätzlich die Admin-Sitzung im Cockpit gebraucht.
 - Selbstupdates (VPS, Lab0): Den Zweitprüfungs-Marker kann ein Agent mit dem Owner-Token selbst setzen
   (Variante C, `self-update.md`). Der Marker ist deshalb nur die Bindung an genau den geprüften Head,
   kein zweiter Prinzipal. Die Freigabe bleibt Jochens eigener Tipp, nachdem er Stand, PR und jeden
