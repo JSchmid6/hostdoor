@@ -377,7 +377,8 @@ describe("self-update class A through the Cockpit", () => {
     flow.telegram.updates.push(tap(offer));
     await flow.tick();
     expect(flow.installs()).toHaveLength(1);
-    expect(flow.audits("hermes.change.telegram_refused").map((audit) => audit.details.reason)).toEqual(["other sender", "already used"]);
+    // listAudits sorts by second-precision created_at, so compare without order.
+    expect(flow.audits("hermes.change.telegram_refused").map((audit) => audit.details.reason).sort()).toEqual(["already used", "other sender"]);
     expect(JSON.stringify(flow.inspect.listAudits(200))).not.toContain(TOKEN);
   });
 
